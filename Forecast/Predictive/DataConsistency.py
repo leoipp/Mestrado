@@ -128,3 +128,7 @@ plt.xlabel('Age (months)')
 plt.ylabel('VTCC (m³/ha)')
 plt.legend()
 plt.show()
+#%% Export cleaned DataFrame to Excel
+output_file = r"G:\PycharmProjects\Mestrado\Data\IFC_LiDAR_Plots_RTK_Cleaned.xlsx"
+df.to_excel(output_file, index=False)
+print(f"Cleaned DataFrame exported to {output_file}")

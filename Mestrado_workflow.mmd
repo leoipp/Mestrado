@@ -12,7 +12,7 @@
 
 #### Modelos Baseados em Métricas
 
-##### Premissas Básicas:<br/>1\) Pixel size deve ser similar ao tamanho da parcela de campo;<br/>2\) Sobrevoo LiDAR e Inventário Florestal devem ocorrer concomitantemente para ajuste de modelos;<br/>3\) Desconsiderar talhões com sinistro e nativas;<br/>4\) Desconsiderar talhões com área inferior a 5 ha;<br/>5\) Desconsiderar plantios mais velhoes que 168 meses \(14 anos\)\.
+##### Premissas Básicas:<br/>1\) Pixel size deve ser similar ao tamanho da parcela de campo;<br/>2\) Sobrevoo LiDAR e Inventário Florestal devem ocorrer concomitantemente para ajuste de modelos;<br/>3\) Desconsiderar talhões com sinistro e nativas;<br/>4\) Desconsiderar talhões com área inferior a 5 ha;<br/>5\) Desconsiderar plantios mais velhoes que 168 meses \(14 anos\);<br/>6\) Desconsiderar plantios mais novos que 36 meses \(3 anos\);<br/>7\) Desconsiderar parcelas com numero de fustes \< 50% do planejado\.
 > align=`left`,fillColor=`#009933`
 
 
@@ -20,7 +20,9 @@
 
 ###### Consistência do Banco de Dados
 
-####### Análise de Importância de Métricas <br/>\(Pearson\)
+####### Análise de Correlação de Métricas \(Pearson\);<br/>Análise de Recursive Feature Elimination \(RFE\);<br/>Análise de Variance Inflation Factor \(VFI\)\.
+> align=`left`
+
 
 ##### Modelagem
 
@@ -90,4 +92,12 @@
 
 ### A densidade de pts/m² <br/>influência na segmentação??
 > fillColor=`#FF8100`
+
+
+## Modelos de Variáveis Dendrométricas \(DAP;HT\)
+
+### Aplicação de Schumacher e Hall \-\> VTCC
+
+#### É uma alternativa melhor??
+> fillColor=`#FF7200`
 

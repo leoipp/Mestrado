@@ -6,36 +6,33 @@
 > mmd.emoticon=`tree`
 
 
-## Prognose
+## Forecast
 
 ### Modelos de Predição
 
 #### Modelos Baseados em Métricas
 
-##### Validação x IFPC X Fábrica
-- NOTE
-<pre>A validação entre os modelos de predição e o real (Sendo o real ou IFPC ou a Fábrica - *logmeter- ocorreu para os talhoes onde a medição de campo foi feita com diferença máxima de +/- um mês entre inventário e sobrevoo LiDAR)</pre>
+##### Premissas Básicas:<br/>1\) Pixel size deve ser similar ao tamanho da parcela de campo;<br/>2\) Sobrevoo LiDAR e Inventário Florestal devem ocorrer concomitantemente para ajuste de modelos;<br/>3\) Desconsiderar talhões com sinistro e nativas;<br/>4\) Desconsiderar talhões com área inferior a 5 ha;<br/>5\) Desconsiderar plantios mais velhoes que 168 meses \(14 anos\)\.
+> align=`left`,fillColor=`#009933`
+
+
+##### Métricas de ajuste
+
+###### Consistência do Banco de Dados
+
+####### Análise de Importância de Métricas <br/>\(Pearson\)
 
 ##### Modelagem
 
 ###### Modelo Não Linear Tradicional
 
+####### Validação x IFPC X Fábrica
+- NOTE
+<pre>A validação entre os modelos de predição e o real (Sendo o real ou IFPC ou a Fábrica - *logmeter- ocorreu para os talhoes onde a medição de campo foi feita com diferença máxima de +/- um mês entre inventário e sobrevoo LiDAR)</pre>
+
 ###### Random Forest Regressor
 
 ###### Redes Neurais Artificiais
-
-##### Métricas de ajuste
-
-##### Premissas Básicas
-> fillColor=`#00FF00`
-
-- NOTE
-<pre>Premissas Básicas do projeto:
-	1) Pixel size deve ser similar ao tamanho da parcela de campo;
-	2) Sobrevoo LiDAR e Inventário Florestal devem ocorrer concomitantemente para ajuste de modelos;
-	3) Desconsiderar talhões com sinistro e nativas;
-	4) Desconsiderar talhões com área inferior a 5 ha;
-</pre>
 
 #### Modelos Baseados na NP??
 > fillColor=`#FF8F00`

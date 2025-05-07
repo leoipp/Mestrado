@@ -20,7 +20,6 @@ for f in folder_variables:
     shapes.setdefault(base, []).append(f)
 #%% Compute the predictions
 idade = pd.read_excel(r'C:\Users\c0010261\Scripts\Mestrado\Data\CNB_LIDAR_IPC_FBA.xlsx')
-predictions = []
 
 for key, files in shapes.items():
     # Padroniza o nome do talhão
@@ -41,7 +40,7 @@ for key, files in shapes.items():
         # Inclui idade_array junto das demais variáveis
         stacked_array = np.hstack(arrays + [idade_array])
 
-        estimated = model.predict(stacked_array)
-        predictions.append(estimated)
+        estimated = np.mean(model.predict(stacked_array))
+        idade.loc[idade['Talhao'] == talhao_nome, 'ESTIMADO'] = estimated
     else:
         print(f"[ERRO] Talhão '{talhao_nome}' não encontrado na planilha.")

@@ -8,10 +8,10 @@ from sklearn.metrics import r2_score, mean_squared_error
 from sklearn.model_selection import train_test_split, RandomizedSearchCV
 
 #%% Read the data
-df = pd.read_excel(r"G:\PycharmProjects\Mestrado\Data\IFC_LiDAR_Plots_RTK_Cleaned.xlsx")
+df = pd.read_excel(r".\Data\IFC_LiDAR_Plots_RTK_Cleaned.xlsx")
 print(df.shape)
 #%% Define variables chosen (ELEV P90, ELEV VARIANCE, ELEV CURT MEAN CUBE, AGE(MONTHS))
-feature_names = ['Elev P90', 'Elev variance', 'Elev CURT mean CUBE', 'Idade (meses)']
+feature_names = ['Elev variance', 'Elev P90', 'Elev CURT mean CUBE', 'Idade (meses)']
 subset = df[feature_names + ['VTCC(m³/ha)']].copy()
 print(subset.shape)
 #%% Variables distribution - Organize data
@@ -34,7 +34,7 @@ sns.pairplot(subset, diag_kind="kde")
 plt.grid(linestyle='--', color='gray', alpha=0.5)
 plt.show()
 #%% Split data into training and testing sets
-x_train, x_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
+x_train, x_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 y_train = y_train.flatten()
 y_test = y_test.flatten()
 print(f"Train shape: {x_train.shape}, Test shape: {x_test.shape}")
@@ -180,4 +180,4 @@ df['Residuals'] = (df['VTCC(m³/ha)'] - df['Predicted VTCC(m³/ha)'])/df['VTCC(m
 df.to_excel(r"G:\PycharmProjects\Mestrado\Data\IFC_LiDAR_Plots_RTK_Cleaned_Predictions.xlsx", index=False)
 #%% Save the model
 rfReg.feature_names = feature_names
-joblib.dump(rfReg, r"G:\PycharmProjects\Mestrado\Forecast\Predictive\Models\RandomForestRegressor.pkl")
+joblib.dump(rfReg, r".\Data\RandomForestRegressor.pkl")

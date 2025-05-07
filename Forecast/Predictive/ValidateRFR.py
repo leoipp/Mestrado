@@ -1,6 +1,7 @@
 import os.path
 
 import numpy as np
+import pandas as pd
 from PIL import Image
 import joblib
 import glob
@@ -18,14 +19,29 @@ for f in folder_variables:
     base = os.path.basename(f).rsplit('_', 1)[0]  # separa por "_" e pega tudo antes do último
     shapes.setdefault(base, []).append(f)
 #%% Compute the predictions
+idade = pd.read_excel(r'C:\Users\c0010261\Scripts\Mestrado\Data\CNB_LIDAR_IPC_FBA.xlsx')
 predictions = []
+
 for key, files in shapes.items():
-    # Ler as imagens
-    images = [Image.open(f) for f in files]
-    # Converter as imagens para arrays numpy
-    arrays = [np.array(image).reshape(-1, 1) for image in images]
-    # Empilhar os arrays em um único array 3D
-    stacked_array = np.hstack(arrays)
-    print(stacked_array.shape)
-    # estimated = model.predict(stacked_array)
-    # predictions.append(estimated)
+    # Padroniza o nome do talhão
+    talhao_nome = key.replace("_", "-")
+
+    # Filtra a idade correspondente
+    idade_row = idade[idade['Talhao'] == talhao_nome]
+
+    if not idade_row.empty:
+        idade_valor = idade_row['Idade (meses)'].values[0]  # extrai como escalar
+
+        images = [Image.open(f) for f in files]
+        arrays = [np.array(image).reshape(-1, 1) for image in images]
+
+        shape = arrays[0].shape
+        idade_array = np.full(shape, idade_valor)
+
+        # Inclui idade_array junto das demais variáveis
+        stacked_array = np.hstack(arrays + [idade_array])
+
+        estimated = model.predict(stacked_array)
+        predictions.append(estimated)
+    else:
+        print(f"[ERRO] Talhão '{talhao_nome}' não encontrado na planilha.")

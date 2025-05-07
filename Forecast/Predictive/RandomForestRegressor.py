@@ -11,7 +11,7 @@ from sklearn.model_selection import train_test_split, RandomizedSearchCV
 df = pd.read_excel(r"G:\PycharmProjects\Mestrado\Data\IFC_LiDAR_Plots_RTK_Cleaned.xlsx")
 print(df.shape)
 #%% Define variables chosen (ELEV P90, ELEV VARIANCE, ELEV CURT MEAN CUBE, AGE(MONTHS))
-feature_names = ['Elev P90', 'Elev variance', 'Idade (meses)']
+feature_names = ['Elev P90', 'Elev variance', 'Elev CURT mean CUBE', 'Idade (meses)']
 subset = df[feature_names + ['VTCC(m³/ha)']].copy()
 print(subset.shape)
 #%% Variables distribution - Organize data
@@ -179,4 +179,5 @@ df['Predicted VTCC(m³/ha)'] = rfReg.predict(X)
 df['Residuals'] = (df['VTCC(m³/ha)'] - df['Predicted VTCC(m³/ha)'])/df['VTCC(m³/ha)']
 df.to_excel(r"G:\PycharmProjects\Mestrado\Data\IFC_LiDAR_Plots_RTK_Cleaned_Predictions.xlsx", index=False)
 #%% Save the model
+rfReg.feature_names = feature_names
 joblib.dump(rfReg, r"G:\PycharmProjects\Mestrado\Forecast\Predictive\Models\RandomForestRegressor.pkl")

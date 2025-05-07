@@ -106,6 +106,7 @@ plt.xlabel('Age (months)')
 plt.ylabel('VTCC (m³/ha)')
 plt.legend()
 plt.show()
+
 #%% Check for stem values lower than 50%
 dim_split = df['ESPACAMENTO'].str.replace(',', '.').str.split('x', expand=True)
 df['ESP_AB'] = dim_split[0].astype(float) * dim_split[1].astype(float)
@@ -125,6 +126,7 @@ plt.xlabel('Age (months)')
 plt.ylabel('VTCC (m³/ha)')
 plt.legend()
 plt.show()
+
 #%% Check for outliers using IQR (NOT RECOMMENDED - CHOOSE ZSCORE)
 Q1 = df['VTCC(m³/ha)'].quantile(0.25)
 Q3 = df['VTCC(m³/ha)'].quantile(0.75)
@@ -147,6 +149,7 @@ plt.xlabel('Age (months)')
 plt.ylabel('VTCC (m³/ha)')
 plt.legend()
 plt.show()
+
 #%% Check for outliers using Z-score
 from scipy import stats
 z_scores = stats.zscore(df['VTCC(m³/ha)'])
@@ -168,6 +171,7 @@ plt.xlabel('Age (months)')
 plt.ylabel('VTCC (m³/ha)')
 plt.legend()
 plt.show()
+
 #%% Check for extreme lower values - not removed with Z-score
 extreme_lower = df[df['VTCC(m³/ha)'] < 100]
 print(f"Extreme lower values found in {len(extreme_lower)} rows.")
@@ -185,6 +189,7 @@ plt.xlabel('Age (months)')
 plt.ylabel('VTCC (m³/ha)')
 plt.legend()
 plt.show()
+
 #%% Check for LiDAR values inconsistencies
 lidar_inconsistencies = df[(df['Elev P90'] <= 0) | (df['Elev variance'] < 0) | (df['Elev CURT mean CUBE'] < 0) | (df[
     'Elev maximum'] > 50)]

@@ -7,8 +7,18 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import KFold, GridSearchCV
 from statsmodels.stats.outliers_influence import variance_inflation_factor
 
+plt.rcParams.update({
+    "font.family": "Times New Roman",
+    "font.size": 10,
+    "axes.titlesize": 10,
+    "axes.labelsize": 10,
+    "xtick.labelsize": 10,
+    "ytick.labelsize": 10,
+    "figure.dpi": 300
+})
+
 #%% Read the data
-df = pd.read_excel(r"G:\PycharmProjects\Mestrado\Data\DataFrames\IFC_LiDAR_Plots_RTK_Cleaned.xlsx")
+df = pd.read_excel(r"C:\Users\c0010261\Scripts\Mestrado\Data\IFC_LiDAR_Plots_RTK_Cleaned.xlsx")
 print(df.shape)
 #%% Calculate Pearson correlation with VTCC
 numeric_df = df.select_dtypes(include='number')
@@ -16,10 +26,11 @@ correlations = numeric_df.corr()['VTCC(m³/ha)'].drop('VTCC(m³/ha)') .sort_valu
 print(correlations)
 #%% Plot the correlations
 plt.figure(figsize=(10, 6))
-plt.hist(correlations, bins=30, alpha=0.7, color='blue', zorder=2)
-plt.title('VTCC Correlation With VTCC')
-plt.xlabel('Pearson Correlation Coefficient')
-plt.ylabel('Frequency')
+plt.hist(correlations, bins=30, alpha=0.7, color='#1f77b4', edgecolor='#1f77b4', linewidth=.8, zorder=2)
+#plt.title('VTCC Correlation With VTCC')
+plt.xlabel('Coeficiente de correlação de Pearson (p)')
+plt.xlim(-1, 1)
+plt.ylabel('Frequência')
 plt.grid(linestyle='--', color='gray', alpha=0.5, zorder=1)
 plt.show()
 #%% Choose the correlations +-.6
@@ -65,7 +76,7 @@ sns.heatmap(
     cbar_kws={"shrink": .8}
 )
 plt.xticks(rotation=45, ha='right')
-plt.title('Correlation Heatmap')
+#plt.title('Correlation Heatmap')
 plt.show()
 #%% Variance Inflation Factor (VIF)
 X_sel = df[selected_cols]
@@ -94,5 +105,5 @@ sns.heatmap(
     cbar_kws={"shrink": .8}
 )
 plt.xticks(rotation=45, ha='right')
-plt.title('Correlation Heatmap')
+#plt.title('Correlation Heatmap')
 plt.show()

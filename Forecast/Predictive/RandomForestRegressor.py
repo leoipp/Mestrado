@@ -7,8 +7,18 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import r2_score, mean_squared_error
 from sklearn.model_selection import train_test_split, RandomizedSearchCV
 
+plt.rcParams.update({
+    "font.family": "Times New Roman",
+    "font.size": 10,
+    "axes.titlesize": 10,
+    "axes.labelsize": 10,
+    "xtick.labelsize": 10,
+    "ytick.labelsize": 10,
+    "figure.dpi": 300
+})
+
 #%% Read the data
-df = pd.read_excel(r"G:\PycharmProjects\Mestrado\Data\DataFrames\IFC_LiDAR_Plots_RTK_Cleaned.xlsx")
+df = pd.read_excel(r"C:\Users\c0010261\Scripts\Mestrado\Data\IFC_LiDAR_Plots_RTK_Cleaned.xlsx")
 print(df.shape)
 #%% Define variables chosen (ELEV P90, ELEV VARIANCE, ELEV CURT MEAN CUBE, AGE(MONTHS))
 feature_names = ['Elev variance', 'Elev P90', 'Elev CURT mean CUBE', 'Idade (meses)']
@@ -110,56 +120,79 @@ print(f"Test Residuals: {np.mean(residuals_test):.2f}%")
 fig, axis = plt.subplots(2, 3, figsize=(8,6))
 # Test - Observed vs Predicted
 axis[0,0].scatter(y_test, y_pred_test, alpha=0.7)
-axis[0,0].set_xlabel("VTCC (m³/ha) - Obs.")
-axis[0,0].set_ylabel("VTCC (m³/ha) - Est.")
-axis[0,0].set_title("Comparison of Observed vs Predicted Values")
+axis[0,0].set_xlabel("Volume total com casca (m³/ha) - Obs.")
+axis[0,0].set_ylabel("Volume total com casca (m³/ha) - Est.")
+#axis[0,0].set_title("Comparison of Observed vs Predicted Values")
 axis[0,0].plot([min(y_test), max(y_test)], [min(y_test), max(y_test)], color='red', linestyle='--')
 axis[0,0].grid(linestyle='--', color='gray', alpha=0.5)
+axis[0,0].set_xlim(0,600)
+axis[0,0].set_ylim(0,600)
 # Test - Residuals
 axis[0,1].scatter(y_pred_test, residuals_test, alpha=0.7)
-axis[0,1].set_xlabel("VTCC (m³/ha) - Est.")
-axis[0,1].set_ylabel("Residuals")
-axis[0,1].set_title("Residuals vs Predicted Values")
+axis[0,1].set_xlabel("Volume total com casca (m³/ha) - Est.")
+axis[0,1].set_ylabel("Resíduos")
+#axis[0,1].set_title("Residuals vs Predicted Values")
 axis[0,1].axhline(y=0, color='red', linestyle='--')
 axis[0,1].set_ylim(-1, 1)
 axis[0,1].grid(linestyle='--', color='gray', alpha=0.5)
 # Test - Residual hist
-sns.histplot(residuals_test, bins=30, color='steelblue', alpha=0.7, ax=axis[0, 2], kde=True)
+sns.histplot(
+    residuals_test,
+    bins=30,
+    color='#1f77b4',
+    edgecolor='#1f77b4',
+    linewidth=0.8,
+    alpha=0.7,
+    ax=axis[0, 2],
+    kde=True
+)
 axis[0,2].set_xlim(-1,1)
-axis[0,2].set_title("Residuals Distribution")
-axis[0,2].set_xlabel("Residuals")
-axis[0,2].set_ylabel("Frequency")
+#axis[0,2].set_title("Residuals Distribution")
+axis[0,2].set_xlabel("Resíduos")
+axis[0,2].set_ylabel("Frequência")
 axis[0,2].axvline(x=0, color='red', linestyle='--')
 axis[0,2].grid(linestyle='--', alpha=0.5, color='grey')
 # Train - Observed vs Predicted
 axis[1,0].scatter(y_train, y_pred_train, alpha=0.7)
-axis[1,0].set_xlabel("VTCC (m³/ha) - Obs.")
-axis[1,0].set_ylabel("VTCC (m³/ha) - Est.")
-axis[1,0].set_title("Comparison of Observed vs Predicted Values")
+axis[1,0].set_xlabel("Volume total com casca (m³/ha) - Obs.")
+axis[1,0].set_ylabel("Volume total com casca (m³/ha) - Est.")
+#axis[1,0].set_title("Comparison of Observed vs Predicted Values")
 axis[1,0].plot([min(y_train), max(y_train)], [min(y_train), max(y_train)], color='red', linestyle='--')
 axis[1,0].grid(linestyle='--', color='gray', alpha=0.5)
+axis[1,0].set_xlim(0,600)
+axis[1,0].set_ylim(0,600)
 # Train - Residuals
 axis[1,1].scatter(y_pred_train, residuals_train, alpha=0.7)
-axis[1,1].set_xlabel("VTCC (m³/ha) - Est.")
-axis[1,1].set_ylabel("Residuals")
-axis[1,1].set_title("Residuals vs Predicted Values")
+axis[1,1].set_xlabel("Volume total com casca (m³/ha) - Est.")
+axis[1,1].set_ylabel("Resíduos")
+#axis[1,1].set_title("Residuals vs Predicted Values")
 axis[1,1].axhline(y=0, color='red', linestyle='--')
 axis[1,1].set_ylim(-1, 1)
 axis[1,1].grid(linestyle='--', color='gray', alpha=0.5)
 # Train - Residual hist
-sns.histplot(residuals_train, bins=30, color='steelblue', alpha=0.7, ax=axis[1, 2], kde=True)
+sns.histplot(
+    residuals_train,
+    bins=30,
+    color='#1f77b4',
+    edgecolor='#1f77b4',
+    linewidth=0.8,
+    alpha=0.7,
+    ax=axis[1, 2],
+    kde=True
+)
 axis[1,2].set_xlim(-1,1)
-axis[1,2].set_title("Residuals Distribution")
-axis[1,2].set_xlabel("Residuals")
-axis[1,2].set_ylabel("Frequency")
+#axis[1,2].set_title("Residuals Distribution")
+axis[1,2].set_xlabel("Resíduos")
+axis[1,2].set_ylabel("Frequência")
 axis[1,2].axvline(x=0, color='red', linestyle='--')
 axis[1,2].grid(linestyle='--', alpha=0.5, color='grey')
 # Adjust layout
-plt.suptitle("Random Forest Regressor - Statistical Metrics", fontsize=16)
+#plt.suptitle("Random Forest Regressor - Statistical Metrics", fontsize=16)
 plt.tight_layout()
 plt.show()
 #%% Feature Importance
 importances = rfReg.feature_importances_
+to_print = ['Variância da altitude', 'Altitude percentil 90', 'Altitude CURT média cúbica', 'Idade (meses)']
 indices = np.argsort(importances)
 # Print the feature ranking
 print("Feature ranking:")
@@ -168,9 +201,9 @@ for f in range(len(feature_names)):
 # Plot the feature importances
 plt.figure(figsize=(10, 6))
 plt.title("Feature Importances")
-plt.barh(range(len(feature_names)), importances[indices], align="center", color='steelblue')
-plt.yticks(range(len(feature_names)), [feature_names[i] for i in indices])
-plt.xlabel("Importance")
+plt.barh(range(len(feature_names)), importances[indices], align="center", color='#1f77b4', alpha=0.7, edgecolor='#1f77b4', linewidth=0.8)
+plt.yticks(range(len(feature_names)), [to_print[i] for i in indices])
+plt.xlabel("Importância")
 plt.grid(linestyle='--', alpha=0.5, color='grey')
 plt.tight_layout()
 plt.show()
@@ -180,4 +213,4 @@ df['Residuals'] = (df['VTCC(m³/ha)'] - df['Predicted VTCC(m³/ha)'])/df['VTCC(m
 #df.to_excel(r"G:\PycharmProjects\Mestrado\Data\IFC_LiDAR_Plots_RTK_Cleaned_Predictions.xlsx", index=False)
 #%% Save the model
 rfReg.feature_names = feature_names
-joblib.dump(rfReg, r"G:\PycharmProjects\Mestrado\Forecast\Predictive\Models\RandomForestRegressor.pkl")
+joblib.dump(rfReg, r"C:\Users\c0010261\Scripts\Mestrado\Data\RandomForestRegressor.pkl")

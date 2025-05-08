@@ -3,23 +3,35 @@ import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
 
+plt.rcParams.update({
+    "font.family": "Times New Roman",
+    "font.size": 10,
+    "axes.titlesize": 10,
+    "axes.labelsize": 10,
+    "xtick.labelsize": 10,
+    "ytick.labelsize": 10,
+    "figure.dpi": 300
+})
+
 #%% Dataframe reader
-df = pd.ExcelFile(r"G:\PycharmProjects\Mestrado\Data\DataFrames\IFC_LiDAR_Plots_RTK.xlsx").parse("IFC - Plots Consistido")
+df = pd.ExcelFile(r"C:\Users\c0010261\Scripts\Mestrado\Data\IFC_LiDAR_Plots_RTK.xlsx").parse("IFC - Plots Consistido")
 print(df.shape)
 
 #%% Scatter plot of VTCC vs Age (months)
 fig, axis = plt.subplots(1, 2, figsize=(10, 6))
 axis[0].scatter(df['Idade (meses)'], df['VTCC(m³/ha)'], alpha=0.7)
 axis[0].grid(linestyle='--', color='gray', alpha=0.5)
-axis[0].set_title('Age (months) vs VTCC')
-axis[0].set_xlabel('Age (months)')
-axis[0].set_ylabel('VTCC (m³/ha)')
+#axis[0].set_title('Idade (meses) vs VTCC')
+axis[0].set_xlabel('Idade (meses)')
+axis[0].set_xlim(0, 500)
+axis[0].set_ylabel('Volume total com casca (m³/ha)')
 
 axis[1].scatter(df['Fustes (n)'], df['VTCC(m³/ha)'], alpha=0.7)
 axis[1].grid(linestyle='--', color='gray', alpha=0.5)
-axis[1].set_title('VTCC vs Stem')
-axis[1].set_xlabel('Stem (n)')
-axis[1].set_ylabel('VTCC (m³/ha)')
+#axis[1].set_title('VTCC vs Stem')
+axis[1].set_xlabel('Fustes (n)')
+axis[1].set_xlim(0, 60)
+axis[1].set_ylabel('Volume total com casca (m³/ha)')
 
 plt.tight_layout()
 plt.show()
@@ -27,29 +39,29 @@ plt.show()
 #%% Histogram of VTCC and Age
 fig, axis = plt.subplots(1, 4, figsize=(14, 6))
 
-axis[0].hist(df['VTCC(m³/ha)'], bins=30, alpha=0.7, color='blue', zorder=2)
+axis[0].hist(df['VTCC(m³/ha)'], bins=30, alpha=0.7, color='#1f77b4', edgecolor='#1f77b4', linewidth=.8, zorder=2)
 axis[0].grid(linestyle='--', color='gray', alpha=0.5, zorder=1)
-axis[0].set_title('Histogram of VTCC')
-axis[0].set_xlabel('VTCC (m³/ha)')
-axis[0].set_ylabel('Frequency')
+#axis[0].set_title('Histogram of VTCC')
+axis[0].set_xlabel('Volume total com casca (m³/ha)')
+axis[0].set_ylabel('Frequência')
 
-axis[1].hist(df['Idade (meses)'], bins=30, alpha=0.7, color='blue', zorder=2)
+axis[1].hist(df['Idade (meses)'], bins=30, alpha=0.7, color='#1f77b4', edgecolor='#1f77b4', linewidth=.8, zorder=2)
 axis[1].grid(linestyle='--', color='gray', alpha=0.5, zorder=1)
-axis[1].set_title('Histogram of Age')
-axis[1].set_xlabel('Age (months)')
-axis[1].set_ylabel('Frequency')
+#axis[1].set_title('Histogram of Age')
+axis[1].set_xlabel('Idade (meses)')
+axis[1].set_ylabel('Frequência')
 
-axis[2].hist(df['Fustes (n)'], bins=30, alpha=0.7, color='blue', zorder=2)
+axis[2].hist(df['Fustes (n)'], bins=30, alpha=0.7, color='#1f77b4', edgecolor='#1f77b4', linewidth=.8, zorder=2)
 axis[2].grid(linestyle='--', color='gray', alpha=0.5, zorder=1)
-axis[2].set_title('Histogram of Stem')
-axis[2].set_xlabel('Stem (n)')
-axis[2].set_ylabel('Frequency')
+#axis[2].set_title('Histogram of Stem')
+axis[2].set_xlabel('Fustes (n)')
+axis[2].set_ylabel('Frequência')
 
-axis[3].hist(df['VTCC(m³/Fuste)'], bins=30, alpha=0.7, color='blue', zorder=2)
+axis[3].hist(df['VTCC(m³/Fuste)'], bins=30, alpha=0.7, color='#1f77b4', edgecolor='#1f77b4', linewidth=.8, zorder=2)
 axis[3].grid(linestyle='--', color='gray', alpha=0.5, zorder=1)
-axis[3].set_title('Histogram of ATV')
-axis[3].set_xlabel('ATV (m³/Stem)')
-axis[3].set_ylabel('Frequency')
+#axis[3].set_title('Histogram of ATV')
+axis[3].set_xlabel('Volume médio individual (m³/n)')
+axis[3].set_ylabel('Frequência')
 
 plt.tight_layout()
 plt.show()
@@ -99,11 +111,12 @@ if not age_outliers.empty:
     print("These rows have been removed from the DataFrame.")
 plt.figure(figsize=(10, 6))
 plt.scatter(df['Idade (meses)'], df['VTCC(m³/ha)'], alpha=0.7)
-plt.scatter(age_outliers['Idade (meses)'], age_outliers['VTCC(m³/ha)'], color='red', label='Extreme Lower Values', alpha=0.7)
+plt.scatter(age_outliers['Idade (meses)'], age_outliers['VTCC(m³/ha)'], color='red', label='Outliers (idade): idade < 36 | idade > 200', alpha=0.7)
 plt.grid(linestyle='--', color='gray', alpha=0.5)
-plt.title('VTCC vs Age (months) between 36 and 200')
-plt.xlabel('Age (months)')
-plt.ylabel('VTCC (m³/ha)')
+#plt.title('VTCC vs Age (months) between 36 and 200')
+plt.xlabel('Idade (meses)')
+plt.xlim(0, 500)
+plt.ylabel('Volume total com casca (m³/ha)')
 plt.legend()
 plt.show()
 
@@ -119,11 +132,11 @@ if not stem_outliers.empty:
     print("These rows have been removed from the DataFrame.")
 plt.figure(figsize=(10, 6))
 plt.scatter(df['Idade (meses)'], df['VTCC(m³/ha)'], alpha=0.7)
-plt.scatter(stem_outliers['Idade (meses)'], stem_outliers['VTCC(m³/ha)'], color='red', label='Extreme Lower Values', alpha=0.7)
+plt.scatter(stem_outliers['Idade (meses)'], stem_outliers['VTCC(m³/ha)'], color='red', label='Outliers (fustes): fustes < 50%', alpha=0.7)
 plt.grid(linestyle='--', color='gray', alpha=0.5)
-plt.title('VTCC vs Age (months) with Stem < 0.5')
-plt.xlabel('Age (months)')
-plt.ylabel('VTCC (m³/ha)')
+#plt.title('VTCC vs Age (months) with Stem < 0.5')
+plt.xlabel('Idade (meses)')
+plt.ylabel('Volume total com casca (m³/ha)')
 plt.legend()
 plt.show()
 
@@ -166,9 +179,9 @@ plt.figure(figsize=(10, 6))
 plt.scatter(df['Idade (meses)'], df['VTCC(m³/ha)'], alpha=0.7)
 plt.scatter(outliers_z['Idade (meses)'], outliers_z['VTCC(m³/ha)'], color='red', label='Outliers Z-score', alpha=0.7)
 plt.grid(linestyle='--', color='gray', alpha=0.5)
-plt.title('VTCC vs Age (months) with Outliers Z-score')
-plt.xlabel('Age (months)')
-plt.ylabel('VTCC (m³/ha)')
+# plt.title('VTCC vs Age (months) with Outliers Z-score')
+plt.xlabel('Idade (meses)')
+plt.ylabel('Volume total com casca (m³/ha)')
 plt.legend()
 plt.show()
 
@@ -182,11 +195,11 @@ if not extreme_lower.empty:
     print("Extreme lower values removed.")
 plt.figure(figsize=(10, 6))
 plt.scatter(df['Idade (meses)'], df['VTCC(m³/ha)'], alpha=0.7)
-plt.scatter(extreme_lower['Idade (meses)'], extreme_lower['VTCC(m³/ha)'], color='red', label='Extreme Lower Values', alpha=0.7)
+plt.scatter(extreme_lower['Idade (meses)'], extreme_lower['VTCC(m³/ha)'], color='red', label='Outliers estrutura: Volumes extremos', alpha=0.7)
 plt.grid(linestyle='--', color='gray', alpha=0.5)
-plt.title('VTCC vs Age (months) with Extreme Lower Values')
-plt.xlabel('Age (months)')
-plt.ylabel('VTCC (m³/ha)')
+#plt.title('VTCC vs Age (months) with Extreme Lower Values')
+plt.xlabel('Idade (meses)')
+plt.ylabel('Volume total com casca (m³/ha)')
 plt.legend()
 plt.show()
 
@@ -201,21 +214,21 @@ if not lidar_inconsistencies.empty:
     print("LiDAR inconsistencies removed.")
 fig, axis = plt.subplots(1, 2, figsize=(10, 6))
 axis[0].scatter(df['Elev maximum'], df['Elev P99'], alpha=0.7)
-axis[0].scatter(lidar_inconsistencies['Elev maximum'], lidar_inconsistencies['Elev P95'], color='red', label='LiDAR Inconsistencies', alpha=0.7)
+axis[0].scatter(lidar_inconsistencies['Elev maximum'], lidar_inconsistencies['Elev P95'], color='red', label='Outliers LiDAR: Ruídos', alpha=0.7)
 axis[0].grid(linestyle='--', color='gray', alpha=0.5)
-axis[0].set_title('Elev maximum vs Elev P99')
-axis[0].set_xlabel('Elev maximum')
-axis[0].set_ylabel('Elev P99')
+#axis[0].set_title('Elev maximum vs Elev P99')
+axis[0].set_xlabel('Altura máxima')
+axis[0].set_ylabel('Altura percentil 99')
 axis[1].scatter(df['Elev maximum'], df['Elev P50'], alpha=0.7)
-axis[1].scatter(lidar_inconsistencies['Elev maximum'], lidar_inconsistencies['Elev P50'], color='red', label='LiDAR Inconsistencies', alpha=0.7)
+axis[1].scatter(lidar_inconsistencies['Elev maximum'], lidar_inconsistencies['Elev P50'], color='red', label='Outliers LiDAR: Ruídos', alpha=0.7)
 axis[1].grid(linestyle='--', color='gray', alpha=0.5)
-axis[1].set_title('Elev maximum vs Elev P50')
-axis[1].set_xlabel('Elev maximum')
-axis[1].set_ylabel('Elev P50')
+#axis[1].set_title('Elev maximum vs Elev P50')
+axis[1].set_xlabel('Altura máxima')
+axis[1].set_ylabel('Altura percentil 50')
 plt.show()
 
 #%% Export cleaned DataFrame to Excel
-output_file = r"G:\PycharmProjects\Mestrado\Data\DataFrames\IFC_LiDAR_Plots_RTK_Cleaned.xlsx"
+output_file = r"C:\Users\c0010261\Scripts\Mestrado\Data\IFC_LiDAR_Plots_RTK_Cleaned.xlsx"
 df.to_excel(output_file, index=False)
 print(f"Cleaned DataFrame exported to {output_file}")
 

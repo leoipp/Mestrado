@@ -24,123 +24,6 @@ for f in folder_variables:
 
 #%% Compute the predictions
 ipc_data = pd.read_excel(r'G:\PycharmProjects\Mestrado\Data\DataFrames\Conferencia_IFPC.xlsx')
-
-for key, files in shapes.items():
-    talhao_nome = key.replace("_", "-")
-    idade_row = ipc_data[ipc_data['Talhao'] == talhao_nome]
-
-    if not idade_row.empty:
-        idade_valor = int(idade_row['Idade'].values[0])
-
-        images = [Image.open(f) for f in files]
-        arrays = [np.array(image).reshape(-1, 1) for image in images]
-
-        stacked_partial = np.hstack(arrays)
-        nan_mask = np.any(np.isnan(stacked_partial), axis=1).reshape(-1, 1)
-
-        idade_array = np.full((arrays[0].shape[0], 1), idade_valor, dtype=float)
-        idade_array[nan_mask] = np.nan
-
-        stacked_array = np.hstack([stacked_partial, idade_array])
-
-        valid_mask = ~nan_mask.ravel()
-        estimated = np.full((stacked_array.shape[0],), np.nan)
-        estimated[valid_mask] = model.predict(stacked_array[valid_mask])
-
-        estimated_mean = np.nanmean(estimated)
-        ipc_data.loc[ipc_data['Talhao'] == talhao_nome, 'ESTIMADO'] = estimated_mean
-    else:
-        print(f"[ERRO] Talhão '{talhao_nome}' não encontrado na planilha.")
-
-#%% Residual calculation
-ipc_data['RESIDUAL'] = (ipc_data['ESTIMADO']-ipc_data['Prod IPC'])/ipc_data['Prod IPC']
-#%% Plot graphs
-fig, axis = plt.subplots(1, 3, figsize=(12, 6))
-
-axis[0].scatter(ipc_data['Prod IPC'], ipc_data['ESTIMADO'], alpha=.7)
-axis[0].plot([ipc_data['Prod IPC'].min(), ipc_data['Prod IPC'].max()], [ipc_data['Prod IPC'].min(), ipc_data['Prod IPC'].max()], color='red', linestyle='--')
-axis[0].set_xlabel('VTCC Obs.')
-axis[0].set_ylabel('VTCC Est.')
-axis[0].set_title(f'VTCC - Observed vs Estimated {ipc_data["RESIDUAL"].mean():.2%}')
-axis[0].grid(linestyle='--', alpha=0.5, color='grey')
-
-axis[1].scatter(ipc_data['ESTIMADO'], ipc_data['RESIDUAL'], alpha=.7)
-axis[1].axhline(y=0, color='red', linestyle='--')
-axis[1].set_xlabel('VTCC Est.')
-axis[1].set_ylabel('Residuals')
-axis[1].set_title('Residuals vs VTCC Est.')
-axis[1].set_ylim(-1, 1)
-axis[1].grid(linestyle='--', alpha=0.5, color='grey')
-
-axis[2].hist(ipc_data['RESIDUAL'], bins=20, alpha=.7)
-axis[2].set_xlabel('Residuals')
-axis[2].set_ylabel('Frequency')
-axis[2].set_title('Residuals Distribution')
-axis[2].set_xlim(-1, 1)
-axis[2].grid(linestyle='--', alpha=0.5, color='grey')
-axis[2].axvline(x=0, color='red', linestyle='--')
-axis[2].set_xticks(np.arange(-1, 1.1, 0.2))
-
-plt.tight_layout()
-plt.show()
-
-#%% Save the results
-ipc_data.to_excel(r'G:\PycharmProjects\Mestrado\Data\DataFrames\Conferencia_IFPC_Predictions.xlsx', index=False)
-
-#%% Compute the predictions with numpy
-def read_raster(file_path):
-    """Lê um arquivo raster e retorna o array numpy e os metadados."""
-    with rasterio.open(file_path) as src:
-        return src.read(1), src.profile, src.transform
-
-for key, files in shapes.items():
-    talhao_nome = key.replace("_", "-")
-    idade_row = ipc_data[ipc_data['Talhao'] == talhao_nome]
-
-    if not idade_row.empty:
-        idade_valor = int(idade_row['Idade'].values[0])
-
-        # Lê o primeiro raster com perfil e os demais só os arrays
-        first_array, profile, transform = read_raster(files[0])
-        arrays = [first_array] + [read_raster(f)[0] for f in files[1:]]
-        stack = np.stack(arrays, axis=-1)
-
-        n_pixels = stack.shape[0] * stack.shape[1]
-        stack_2d = stack.reshape((n_pixels, -1))
-
-        idade_array = np.full((n_pixels, 1), idade_valor, dtype=float)
-        stack_2d_with_age = np.concatenate((stack_2d, idade_array), axis=1)
-
-        valid_mask = ~np.any(np.isnan(stack_2d_with_age), axis=1).reshape(-1, 1)
-        estimated = np.full((n_pixels,), np.nan)
-        estimated[valid_mask.ravel()] = model.predict(stack_2d_with_age[valid_mask.ravel()])
-
-        estimated_mean = np.nanmean(estimated)
-        ipc_data.loc[ipc_data['Talhao'] == talhao_nome, 'ESTIMADO2'] = estimated_mean
-
-        # Recria o raster 2D com as predições
-        predicted_raster = estimated.reshape((stack.shape[0], stack.shape[1]))
-
-        # Atualiza o perfil para salvar 1 banda e tipo float32
-        profile.update({
-            'count': 1,
-            'dtype': 'float32',
-            'transform': transform
-        })
-
-        output_path = fr"G:\PycharmProjects\Mestrado\Data\Predictive\Estimates\{talhao_nome}_estimado.tif"
-        with rasterio.open(output_path, 'w', **profile) as dst:
-            dst.write(predicted_raster.astype(np.float32), 1)
-
-    else:
-        print(f"[ERRO] Talhão '{talhao_nome}' não encontrado na planilha.")
-
-#%% verify if its equal both
-plt.scatter(ipc_data['ESTIMADO'], ipc_data['ESTIMADO2'], alpha=0.7)
-plt.show()
-#%% Incerteza
-ipc_data = pd.read_excel(r'G:\PycharmProjects\Mestrado\Data\DataFrames\Conferencia_IFPC.xlsx')
-
 def read_raster(file_path):
     """Lê um arquivo raster e retorna o array numpy."""
     with rasterio.open(file_path) as src:
@@ -217,11 +100,45 @@ for key, files in shapes.items():
 
     # Atualiza DataFrame com valor médio estimado
     estimated_mean = np.nanmean(predicted_raster)
-    ipc_data.loc[ipc_data['Talhao'] == talhao_nome, 'ESTIMADO2'] = estimated_mean
+    ipc_data.loc[ipc_data['Talhao'] == talhao_nome, 'ESTIMADO'] = estimated_mean
 
     print(f"[OK] Talhão '{talhao_nome}': estimado = {estimated_mean:.2f}")
-#%% Validate random in raster
 
-ex1 = np.array([121.578499, 26.097700, 18.420601, 98]).reshape(1, -1)
-pred = model.predict(ex1)
-print(pred)
+#%% Plot graphs
+ipc_data['RESIDUAL'] = (ipc_data['ESTIMADO']-ipc_data['Prod IPC'])/ipc_data['Prod IPC']
+fig, axis = plt.subplots(1, 3, figsize=(12, 6))
+
+axis[0].scatter(ipc_data['Prod IPC'], ipc_data['ESTIMADO'], alpha=.7)
+axis[0].plot([ipc_data['Prod IPC'].min(), ipc_data['Prod IPC'].max()], [ipc_data['Prod IPC'].min(), ipc_data['Prod IPC'].max()], color='red', linestyle='--')
+axis[0].set_xlabel('VTCC Obs.')
+axis[0].set_ylabel('VTCC Est.')
+axis[0].set_title(f'VTCC - Observed vs Estimated {ipc_data["RESIDUAL"].mean():.2%}')
+axis[0].grid(linestyle='--', alpha=0.5, color='grey')
+
+axis[1].scatter(ipc_data['ESTIMADO'], ipc_data['RESIDUAL'], alpha=.7)
+axis[1].axhline(y=0, color='red', linestyle='--')
+axis[1].set_xlabel('VTCC Est.')
+axis[1].set_ylabel('Residuals')
+axis[1].set_title('Residuals vs VTCC Est.')
+axis[1].set_ylim(-1, 1)
+axis[1].grid(linestyle='--', alpha=0.5, color='grey')
+
+axis[2].hist(ipc_data['RESIDUAL'], bins=20, alpha=.7)
+axis[2].set_xlabel('Residuals')
+axis[2].set_ylabel('Frequency')
+axis[2].set_title('Residuals Distribution')
+axis[2].set_xlim(-1, 1)
+axis[2].grid(linestyle='--', alpha=0.5, color='grey')
+axis[2].axvline(x=0, color='red', linestyle='--')
+axis[2].set_xticks(np.arange(-1, 1.1, 0.2))
+
+plt.tight_layout()
+plt.show()
+
+#%% Save the results
+ipc_data.to_excel(r'G:\PycharmProjects\Mestrado\Data\DataFrames\Conferencia_IFPC_Predictions.xlsx', index=False)
+
+#%% Validate random in raster
+# ex1 = np.array([121.578499, 26.097700, 18.420601, 98]).reshape(1, -1)
+# pred = model.predict(ex1)
+# print(pred)

@@ -4,7 +4,7 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 
 #%% Dataframe reader
-df = pd.ExcelFile(r"C:\Users\c0010261\Scripts\Mestrado\Data\IFC_LiDAR_Plots_RTK.xlsx").parse("IFC - Plots Consistido")
+df = pd.ExcelFile(r"G:\PycharmProjects\Mestrado\Data\DataFrames\IFC_LiDAR_Plots_RTK.xlsx").parse("IFC - Plots Consistido")
 print(df.shape)
 
 #%% Scatter plot of VTCC vs Age (months)
@@ -215,7 +215,7 @@ axis[1].set_ylabel('Elev P50')
 plt.show()
 
 #%% Export cleaned DataFrame to Excel
-output_file = r".\Data\IFC_LiDAR_Plots_RTK_Cleaned.xlsx"
+output_file = r"G:\PycharmProjects\Mestrado\Data\DataFrames\IFC_LiDAR_Plots_RTK_Cleaned.xlsx"
 df.to_excel(output_file, index=False)
 print(f"Cleaned DataFrame exported to {output_file}")
 

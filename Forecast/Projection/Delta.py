@@ -169,9 +169,9 @@ def add_age_band(raster_path, output_path, df, referencia_data='2019-12-14'):
 
 if __name__ == "__main__":
     # --- DELTA RASTER ---
-    # src_2022 = r'G:\PycharmProjects\Mestrado\Data\Crescimento_e_Producao\2022-2024\2022\Talhoes\*.tif'
-    # src_2024 = r'G:\PycharmProjects\Mestrado\Data\Crescimento_e_Producao\2022-2024\2024\Talhoes\*.tif'
-    # output_dir = r'G:\PycharmProjects\Mestrado\Data\Crescimento_e_Producao\2022-2024\delta'
+    # src_2022 = r'G:\PycharmProjects\Mestrado\Data\Projection\2022-2024\2022\Talhoes\*.tif'
+    # src_2024 = r'G:\PycharmProjects\Mestrado\Data\Projection\2022-2024\2024\Talhoes\*.tif'
+    # output_dir = r'G:\PycharmProjects\Mestrado\Data\Projection\2022-2024\delta'
     # df = pd.read_excel(r'G:\PycharmProjects\Mestrado\Data\Cadastro_florestal.xlsx')
     # # Get the list of files for 01 and 02
     # files_2022 = {os.path.basename(f): f for f in glob.glob(src_2022)}
@@ -188,8 +188,8 @@ if __name__ == "__main__":
     #     # Calculate the delta raster
     #     delta_raster(file_2022, file_2024, os.path.join(output_dir, name), df)
 
-    src_2024 = r'G:\PycharmProjects\Mestrado\Data\Crescimento_e_Producao\2022-2024\2024\Talhoes\*.tif'
-    output_dir = r'/Data/Crescimento_e_Producao/2022-2024/2024/Talhoes_id01'
+    src_2024 = r'/Data/Projection\2022-2024\2024\Talhoes\*.tif'
+    output_dir = r'/Data/Projection/2022-2024/2024/Talhoes_id01'
     df = pd.read_excel(r'G:\PycharmProjects\Mestrado\Data\Cadastro_florestal.xlsx')
 
     os.makedirs(output_dir, exist_ok=True)

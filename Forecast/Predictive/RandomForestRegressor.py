@@ -8,7 +8,7 @@ from sklearn.metrics import r2_score, mean_squared_error
 from sklearn.model_selection import train_test_split, RandomizedSearchCV
 
 #%% Read the data
-df = pd.read_excel(r".\Data\IFC_LiDAR_Plots_RTK_Cleaned.xlsx")
+df = pd.read_excel(r"G:\PycharmProjects\Mestrado\Data\DataFrames\IFC_LiDAR_Plots_RTK_Cleaned.xlsx")
 print(df.shape)
 #%% Define variables chosen (ELEV P90, ELEV VARIANCE, ELEV CURT MEAN CUBE, AGE(MONTHS))
 feature_names = ['Elev variance', 'Elev P90', 'Elev CURT mean CUBE', 'Idade (meses)']
@@ -177,7 +177,7 @@ plt.show()
 #%% Insert predictions into the original dataframe
 df['Predicted VTCC(m³/ha)'] = rfReg.predict(X)
 df['Residuals'] = (df['VTCC(m³/ha)'] - df['Predicted VTCC(m³/ha)'])/df['VTCC(m³/ha)']
-df.to_excel(r"G:\PycharmProjects\Mestrado\Data\IFC_LiDAR_Plots_RTK_Cleaned_Predictions.xlsx", index=False)
+#df.to_excel(r"G:\PycharmProjects\Mestrado\Data\IFC_LiDAR_Plots_RTK_Cleaned_Predictions.xlsx", index=False)
 #%% Save the model
 rfReg.feature_names = feature_names
-joblib.dump(rfReg, r".\Data\RandomForestRegressor.pkl")
+joblib.dump(rfReg, r"G:\PycharmProjects\Mestrado\Forecast\Predictive\Models\RandomForestRegressor.pkl")

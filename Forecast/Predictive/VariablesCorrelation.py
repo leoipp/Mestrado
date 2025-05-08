@@ -8,7 +8,7 @@ from sklearn.model_selection import KFold, GridSearchCV
 from statsmodels.stats.outliers_influence import variance_inflation_factor
 
 #%% Read the data
-df = pd.read_excel(r".\Data\IFC_LiDAR_Plots_RTK_Cleaned.xlsx")
+df = pd.read_excel(r"G:\PycharmProjects\Mestrado\Data\DataFrames\IFC_LiDAR_Plots_RTK_Cleaned.xlsx")
 print(df.shape)
 #%% Calculate Pearson correlation with VTCC
 numeric_df = df.select_dtypes(include='number')

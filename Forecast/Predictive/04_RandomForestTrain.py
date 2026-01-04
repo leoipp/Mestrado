@@ -22,10 +22,10 @@ Variáveis selecionadas (saída do 02_VariablesCorrelation.py / 03_FeatureSelect
     - Idade (meses): Idade do plantio
 
 Saídas:
-    - Models/RandomForestRegressor.pkl: Modelo treinado serializado
-    - Results/Training_Metrics.xlsx: Métricas de validação cruzada
-    - Results/Feature_Importance.xlsx: Importância das variáveis
-    - Gráficos: Observado vs Predito, Resíduos, Histograma
+    - Models/RF_Regressor.pkl: Modelo treinado serializado
+    - Results/RF_Training_Metrics.xlsx: Métricas de validação cruzada
+    - Results/RF_Feature_Importance.png: Gráfico de importância das variáveis
+    - Results/RF_Diagnostics.png: Gráficos diagnósticos (Obs vs Pred, Resíduos)
 
 Autor: Leonardo Ippolito Rodrigues
 Data: 2024
@@ -458,12 +458,12 @@ def train_random_forest(
     # -------------------------------------------------------------------------
     # 5. IMPORTÂNCIA DAS VARIÁVEIS
     # -------------------------------------------------------------------------
-    print("[5/6] Calculando importância das variáveis...")
+    print("[5/7] Calculando importância das variáveis...")
 
     importance_df = plot_feature_importance(
         rf_optimized,
         feature_names,
-        output_path=OUTPUT_DIR / 'Feature_Importance.png' if save_results else None
+        output_path=OUTPUT_DIR / 'RF_Feature_Importance.png' if save_results else None
     )
 
     print()
@@ -471,25 +471,29 @@ def train_random_forest(
     # -------------------------------------------------------------------------
     # 6. GRÁFICOS DIAGNÓSTICOS
     # -------------------------------------------------------------------------
-    print("[6/6] Gerando gráficos diagnósticos...")
-
-    plot_diagnostics(
-        y, y_pred_cv, metrics,
-        output_path=OUTPUT_DIR / 'Training_Diagnostics.png' if save_results else None
-    )
-
-    # -------------------------------------------------------------------------
-    # EXPORTAÇÃO DOS RESULTADOS
-    # -------------------------------------------------------------------------
-    if save_model:
-        model_path = MODEL_DIR / 'RandomForestRegressor.pkl'
-        joblib.dump(rf_optimized, model_path)
-        print(f"\nModelo salvo: {model_path}")
+    print("[6/7] Gerando gráficos diagnósticos...")
 
     if save_results:
-        # Métricas
+        plot_diagnostics(
+            y, y_pred_cv, metrics,
+            output_path=OUTPUT_DIR / 'RF_Diagnostics.png'
+        )
+    print()
+
+    # -------------------------------------------------------------------------
+    # 7. EXPORTAÇÃO DOS RESULTADOS
+    # -------------------------------------------------------------------------
+    print("[7/7] Exportando resultados...")
+
+    if save_model:
+        model_path = MODEL_DIR / 'RF_Regressor.pkl'
+        joblib.dump(rf_optimized, model_path)
+        print(f"  Modelo salvo: {model_path}")
+
+    if save_results:
         metrics_df = pd.DataFrame([{
             'Data_Treinamento': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'Modelo': 'Random Forest Regressor',
             'N_Amostras': len(y),
             'N_Features': len(feature_names),
             'Features': str(feature_names),
@@ -498,12 +502,11 @@ def train_random_forest(
             'Best_Params': str(best_params)
         }])
 
-        metrics_path = OUTPUT_DIR / 'Training_Metrics.xlsx'
+        metrics_path = OUTPUT_DIR / 'RF_Training_Metrics.xlsx'
         with pd.ExcelWriter(metrics_path, engine='openpyxl') as writer:
             metrics_df.to_excel(writer, sheet_name='Metrics', index=False)
             importance_df.to_excel(writer, sheet_name='Feature_Importance', index=False)
 
-            # Adiciona DataFrame com predições
             pred_df = pd.DataFrame({
                 'Observado': y,
                 'Predito_CV': y_pred_cv,
@@ -512,7 +515,7 @@ def train_random_forest(
             })
             pred_df.to_excel(writer, sheet_name='Predictions', index=False)
 
-        print(f"Métricas salvas: {metrics_path}")
+        print(f"  Metricas salvas: {metrics_path}")
 
     print()
     print("=" * 70)

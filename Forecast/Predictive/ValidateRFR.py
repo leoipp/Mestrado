@@ -141,10 +141,11 @@ sns.histplot(
     linewidth=0.8,
     alpha=0.7,
     ax=axis[2],
-    kde=True
+    kde=True,
+    stat='percent'
 )
 axis[2].set_xlabel('Resíduos')
-axis[2].set_ylabel('Frequência')
+axis[2].set_ylabel('Frequência (%)')
 #axis[2].set_title('Residuals Distribution')
 axis[2].set_xlim(-1, 1)
 axis[2].grid(linestyle='--', alpha=0.5, color='grey')

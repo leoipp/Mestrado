@@ -1,7 +1,7 @@
 <p align="center">
-  <img src="https://portal.ufvjm.edu.br/dicom/central-de-conteudo/identidade-visual/marcas-ufvjm/logotipo-ufvjm-horizontal-colorido.png/@@images/image.png" alt="UFVJM" height="80"/>
+  <img src="https://portal.ufvjm.edu.br/dicom/central-de-conteudo/identidade-visual/marcas-ufvjm/vertical-sem-assinatura-colorida.png" alt="UFVJM" height="80"/>
   &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
-  <img src="https://sites.google.com/view/treelab-ufvjm/_/rsrc/1747085972741/config/customLogo.gif" alt="TreeLab" height="80"/>
+  <img src="https://sglab.com.br/img/logolab/408256cff6d6421eb1b0159939770fb6.png" alt="TreeLab" height="80"/>
 </p>
 
 <h1 align="center">Predicao de Volume Florestal com LiDAR</h1>
@@ -14,7 +14,7 @@
 <p align="center">
   <strong>Mestrando:</strong> Leonardo Ippolito Rodrigues<br>
   <strong>Orientador:</strong> Prof. Dr. Eric Bastos Gorgens<br>
-  <strong>Grupo de Pesquisa:</strong> <a href="https://sites.google.com/view/treelab-ufvjm">TreeLab - Forest Data Science</a>
+  <strong>Grupo de Pesquisa:</strong> <a href="https://sglab.com.br/site/laboratorio-de-ciencia-de-dados-florestais/177/">TreeLab - Forest Data Science</a>
 </p>
 
 ---

@@ -49,8 +49,9 @@ MODEL_DIR = Path(r"G:\PycharmProjects\Mestrado\Forecast\Predictive\Models")
 
 # Variáveis do modelo (definidas na etapa de seleção de features)
 FEATURE_NAMES = [
-    'Elev P99', 'Elev variance',
-    'Elev L1',
+    'Elev P90',        # Percentil 90 - estrutura dominante
+    'Elev P60',        # Percentil 60 - estrutura média do dossel
+    'Elev maximum',    # Altura máxima - árvores emergentes
     'ROTACAO',         # Rotação florestal
     'REGIONAL',        # Regional
     'Idade (meses)'    # Idade do plantio
@@ -60,10 +61,24 @@ FEATURE_NAMES = [
 TARGET_COLUMN = 'VTCC(m³/ha)'
 
 # Parâmetros de validação cruzada
-CV_FOLDS_TUNING = 10      # Folds para otimização de hiperparâmetros
-CV_FOLDS_EVALUATION = 10  # Folds para avaliação final
+CV_FOLDS_TUNING = 5      # Folds para otimização de hiperparâmetros
+CV_FOLDS_EVALUATION = 5  # Folds para avaliação final
 RANDOM_STATE = 42         # Semente para reprodutibilidade
 N_ITER_SEARCH = 1000      # Iterações do RandomizedSearchCV
+APPLY_ONE_HOT = True   # True = aplica OHE em variáveis categóricas
+DROP_FIRST_OHE = False  # True se quiser evitar colinearidade (não necessário em RF)
+FORCE_OHE_COLUMNS = [] # Colunas a forçar OHE mesmo se numéricas
+
+# Feature Engineering (Interações)
+CREATE_INTERACTIONS = True  # Se True, cria variáveis de interação
+# Quais variáveis (após OHE) você quer multiplicar (ex.: LiDAR contínuas)
+INTERACTION_BASE_FEATURES = ['Elev P90', 'Elev P60', 'Elev maximum', 'Idade (meses)']
+# Prefixos/colunas que serão tratadas como "indicadores" (ex.: OHE de REGIONAL/ROTACAO)
+# Você pode colocar prefixos, e o código pega todas as colunas que começam com isso.
+INTERACTION_INDICATOR_PREFIXES = ['REGIONAL_', 'ROTACAO_']
+# Se True, remove as colunas originais usadas nas interações (geralmente deixe False)
+DROP_ORIGINAL_AFTER_INTERACTIONS = False
+
 
 # Configuração de estilo dos gráficos
 plt.rcParams.update({
@@ -83,6 +98,85 @@ COLOR_SECONDARY = '#ff7f0e'
 # =============================================================================
 # FUNÇÕES AUXILIARES
 # =============================================================================
+def create_interaction_features(X_df,
+                                base_features,
+                                indicator_prefixes,
+                                drop_original=False):
+    """
+    Cria variáveis de interação: indicador(0/1) * feature_contínua.
+
+    Ex.: REGIONAL_GN * Elev P90  ->  REGIONAL_GN__x__Elev P90
+
+    Parameters
+    ----------
+    X_df : pd.DataFrame
+        DataFrame com as features já numéricas (idealmente após OHE).
+    base_features : list
+        Lista de colunas contínuas para multiplicar (P90, P60, etc).
+    indicator_prefixes : list
+        Prefixos para selecionar colunas indicadoras (REGIONAL_, ROTACAO_, etc).
+    drop_original : bool
+        Se True, remove base_features e indicadores originais após criar interações.
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame com interações adicionadas.
+    """
+    df_out = X_df.copy()
+
+    # Seleciona colunas indicadoras por prefixo
+    indicator_cols = []
+    for pref in indicator_prefixes:
+        indicator_cols.extend([c for c in df_out.columns if c.startswith(pref)])
+
+    indicator_cols = sorted(set(indicator_cols))
+
+    # Filtra base_features existentes
+    base_cols = [c for c in base_features if c in df_out.columns]
+
+    if not indicator_cols:
+        print("  [Interações] Nenhuma coluna indicadora encontrada (prefixos não bateram).")
+        return df_out
+
+    if not base_cols:
+        print("  [Interações] Nenhuma base_feature encontrada para interação.")
+        return df_out
+
+    print(f"  [Interações] Indicadores: {indicator_cols}")
+    print(f"  [Interações] Bases: {base_cols}")
+
+    # Cria interações
+    for ind in indicator_cols:
+        for base in base_cols:
+            new_name = f"{ind}__x__{base}"
+            df_out[new_name] = df_out[ind].astype(float) * df_out[base].astype(float)
+
+    if drop_original:
+        df_out = df_out.drop(columns=list(set(indicator_cols + base_cols)))
+
+    return df_out
+
+def apply_one_hot_encoding(df, feature_names, drop_first=False, force_ohe_columns=None):
+    X_df = df[feature_names].copy()
+
+    force_ohe_columns = force_ohe_columns or []
+
+    # Detecta colunas não numéricas
+    categorical_cols = X_df.select_dtypes(exclude=[np.number]).columns.tolist()
+
+    # Adiciona colunas a forçar OHE (mesmo se forem numéricas)
+    for col in force_ohe_columns:
+        if col in X_df.columns and col not in categorical_cols:
+            categorical_cols.append(col)
+
+    if categorical_cols:
+        print(f"  Aplicando One-Hot Encoding em: {categorical_cols}")
+        X_df = pd.get_dummies(X_df, columns=categorical_cols, drop_first=drop_first)
+    else:
+        print("  Nenhuma variável categórica detectada para One-Hot Encoding.")
+
+    return X_df.values.astype(float), list(X_df.columns), X_df
 
 def create_hyperparameter_grid():
     """
@@ -371,8 +465,30 @@ def train_random_forest(
     print("[1/6] Carregando dados...")
     df = pd.read_excel(input_file)
 
-    X = df[feature_names].values.astype(float)
     y = df[target_column].values.astype(float)
+
+    # ---- One-Hot (se ligado) ----
+    if APPLY_ONE_HOT:
+        X, feature_names, X_df = apply_one_hot_encoding(
+            df,
+            feature_names,
+            drop_first=DROP_FIRST_OHE,
+            force_ohe_columns=FORCE_OHE_COLUMNS
+        )
+    else:
+        X_df = df[feature_names].copy()
+        X = X_df.values.astype(float)
+
+    # ---- Interações (se ligado) ----
+    if CREATE_INTERACTIONS:
+        X_df = create_interaction_features(
+            X_df,
+            base_features=INTERACTION_BASE_FEATURES,
+            indicator_prefixes=INTERACTION_INDICATOR_PREFIXES,
+            drop_original=DROP_ORIGINAL_AFTER_INTERACTIONS
+        )
+        X = X_df.values.astype(float)
+        feature_names = list(X_df.columns)
 
     print(f"  Amostras: {len(y)}")
     print(f"  Features: {len(feature_names)}")

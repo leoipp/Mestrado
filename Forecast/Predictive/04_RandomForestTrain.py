@@ -72,10 +72,10 @@ FORCE_OHE_COLUMNS = [] # Colunas a forçar OHE mesmo se numéricas
 # Feature Engineering (Interações)
 CREATE_INTERACTIONS = True  # Se True, cria variáveis de interação
 # Quais variáveis (após OHE) você quer multiplicar (ex.: LiDAR contínuas)
-INTERACTION_BASE_FEATURES = ['Elev P90', 'Elev P60', 'Elev maximum', 'Idade (meses)']
+INTERACTION_BASE_FEATURES = ['Elev P90', 'Elev P60', 'Elev maximum']
 # Prefixos/colunas que serão tratadas como "indicadores" (ex.: OHE de REGIONAL/ROTACAO)
 # Você pode colocar prefixos, e o código pega todas as colunas que começam com isso.
-INTERACTION_INDICATOR_PREFIXES = ['REGIONAL_', 'ROTACAO_']
+INTERACTION_INDICATOR_PREFIXES = ['REGIONAL_', 'ROTACAO_', 'Idade (meses)']
 # Se True, remove as colunas originais usadas nas interações (geralmente deixe False)
 DROP_ORIGINAL_AFTER_INTERACTIONS = False
 

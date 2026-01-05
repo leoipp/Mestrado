@@ -202,10 +202,10 @@ if __name__ == '__main__':
         description='Converte shapefile para raster GeoTIFF'
     )
     parser.add_argument('shapefile', help='Caminho do shapefile de entrada')
-    parser.add_argument('field', help='Campo a ser rasterizado')
-    parser.add_argument('output', help='Caminho do raster de saída (.tif)')
-    parser.add_argument('--cellsize', type=float, default=10.0,
-                        help='Tamanho do pixel (default: 10.0)')
+    parser.add_argument('field', nargs='?', help='Campo a ser rasterizado')
+    parser.add_argument('output', nargs='?', help='Caminho do raster de saída (.tif)')
+    parser.add_argument('--cellsize', type=float, default=17.0,
+                        help='Tamanho do pixel (default: 17.0)')
     parser.add_argument('--epsg', type=int, default=31983,
                         help='Código EPSG (default: 31983 - SIRGAS 2000 UTM 23S)')
     parser.add_argument('--nodata', type=float, default=-9999.0,

@@ -1,34 +1,38 @@
 """
-MergeTiff.py - Mosaico de Rasters GeoTIFF
+MergeTiff.py - Mosaico de Rasters GeoTIFF (ROBUSTO)
 
 Este script combina múltiplos arquivos GeoTIFF em um único mosaico,
 resolvendo sobreposições e mantendo o georreferenciamento.
 
-Funcionalidades:
-    - Merge de múltiplos TIFFs em um único arquivo
-    - Múltiplos métodos de resolução de sobreposição (first, last, max, min, mean)
-    - Suporte a diferentes resoluções (reamostragem automática)
-    - Compressão configurável (LZW, DEFLATE, etc.)
-    - Processamento em lote por padrão de nome
+Correções/robustez adicionadas:
+- Trata NoData = None (muito comum em float32) definindo um nodata efetivo seguro
+- Remove valores absurdos (ex.: ~1e+38), NaN e Inf antes de salvar
+- Evita "upside down" no mosaico final (pixel height sempre negativo)
+- Salva com BIGTIFF=IF_SAFER e tiled=True (essencial para mosaicos grandes)
+- Predictor=3 para floats com compressão (melhor tamanho/performance)
+- Métodos max/min/mean corrigidos para ignorar nodata dos dois lados
+- Estatísticas finais robustas (não quebram com nodata None)
+- merge_by_groups corrigido (agrupamento real por sufixo/padrão)
 
 Dependências:
-    - rasterio
-    - numpy
+- rasterio
+- numpy
 
 Autor: Leonardo Ippolito Rodrigues
-Data: 2024
+Revisão crítica/patch: 2026
 Projeto: Mestrado - Predição de Volume Florestal com LiDAR
 """
 
 import numpy as np
 from pathlib import Path
-from typing import Optional, List, Union, Callable
+from typing import Optional, List, Union, Dict
 from datetime import datetime
 
 try:
     import rasterio
     from rasterio.merge import merge
     from rasterio.enums import Resampling
+    from rasterio.transform import Affine
     HAS_RASTERIO = True
 except ImportError:
     HAS_RASTERIO = False
@@ -36,58 +40,73 @@ except ImportError:
 
 
 # =============================================================================
-# MÉTODOS DE MERGE
+# MÉTODOS DE MERGE (CORRIGIDOS PARA API RASTERIO >= 1.3)
+# =============================================================================
+# IMPORTANTE: A partir do rasterio 1.3, os parâmetros old_nodata e new_nodata
+# são MÁSCARAS BOOLEANAS (True = nodata), não valores float!
 # =============================================================================
 
+
 def method_first(old_data, new_data, old_nodata, new_nodata, **kwargs):
-    """Mantém o primeiro valor válido (padrão do rasterio)."""
-    mask = np.empty_like(old_data, dtype='bool')
-    np.equal(old_data, old_nodata, out=mask)
-    np.copyto(old_data, new_data, where=mask)
+    """Mantém o primeiro valor válido (preenche apenas onde old é nodata)."""
+    # old_nodata/new_nodata são máscaras: True onde é nodata
+    # Onde old é nodata (~old_valid) e new é válido (~new_nodata), copia
+    old_is_nodata = old_nodata
+    new_is_valid = ~new_nodata
+    np.copyto(old_data, new_data, where=(old_is_nodata & new_is_valid))
 
 
 def method_last(old_data, new_data, old_nodata, new_nodata, **kwargs):
-    """Sobrescreve com o último valor válido."""
-    mask = np.empty_like(new_data, dtype='bool')
-    np.not_equal(new_data, new_nodata, out=mask)
-    np.copyto(old_data, new_data, where=mask)
+    """Sobrescreve com o último valor válido (onde new é válido)."""
+    new_is_valid = ~new_nodata
+    np.copyto(old_data, new_data, where=new_is_valid)
 
 
 def method_max(old_data, new_data, old_nodata, new_nodata, **kwargs):
     """Mantém o valor máximo nas sobreposições."""
-    mask = np.empty_like(new_data, dtype='bool')
-    np.not_equal(new_data, new_nodata, out=mask)
-    np.maximum(old_data, new_data, out=old_data, where=mask)
+    old_is_valid = ~old_nodata
+    new_is_valid = ~new_nodata
+
+    # Onde só o novo é válido, copia
+    np.copyto(old_data, new_data, where=(old_nodata & new_is_valid))
+
+    # Onde ambos válidos, faz max
+    both_valid = old_is_valid & new_is_valid
+    np.maximum(old_data, new_data, out=old_data, where=both_valid)
 
 
 def method_min(old_data, new_data, old_nodata, new_nodata, **kwargs):
     """Mantém o valor mínimo nas sobreposições."""
-    # Primeiro, substitui nodata por valor alto para não afetar o mínimo
-    old_copy = np.where(old_data == old_nodata, np.inf, old_data)
-    new_copy = np.where(new_data == new_nodata, np.inf, new_data)
-    result = np.minimum(old_copy, new_copy)
-    np.copyto(old_data, result, where=(result != np.inf))
+    old_is_valid = ~old_nodata
+    new_is_valid = ~new_nodata
+
+    # Onde só o novo é válido, copia
+    np.copyto(old_data, new_data, where=(old_nodata & new_is_valid))
+
+    # Onde ambos válidos, faz min
+    both_valid = old_is_valid & new_is_valid
+    np.minimum(old_data, new_data, out=old_data, where=both_valid)
 
 
 def method_mean(old_data, new_data, old_nodata, new_nodata, **kwargs):
-    """Calcula a média nas sobreposições."""
-    old_valid = old_data != old_nodata
-    new_valid = new_data != new_nodata
-    both_valid = old_valid & new_valid
+    """Calcula média nas sobreposições."""
+    old_is_valid = ~old_nodata
+    new_is_valid = ~new_nodata
+    both_valid = old_is_valid & new_is_valid
 
-    # Onde ambos são válidos, faz a média
-    np.copyto(old_data, (old_data + new_data) / 2, where=both_valid)
-    # Onde só o novo é válido, copia o novo
-    np.copyto(old_data, new_data, where=(~old_valid & new_valid))
+    # Média onde ambos válidos
+    np.copyto(old_data, (old_data + new_data) / 2.0, where=both_valid)
+
+    # Onde só o novo é válido -> copia
+    np.copyto(old_data, new_data, where=(old_nodata & new_is_valid))
 
 
-# Dicionário de métodos disponíveis
 MERGE_METHODS = {
-    'first': method_first,
-    'last': method_last,
-    'max': method_max,
-    'min': method_min,
-    'mean': method_mean
+    "first": method_first,
+    "last": method_last,
+    "max": method_max,
+    "min": method_min,
+    "mean": method_mean,
 }
 
 
@@ -96,92 +115,144 @@ MERGE_METHODS = {
 # =============================================================================
 
 def get_raster_info(file_path: str) -> dict:
-    """
-    Obtém informações de um arquivo raster.
-
-    Parameters
-    ----------
-    file_path : str
-        Caminho do arquivo raster.
-
-    Returns
-    -------
-    dict
-        Dicionário com informações do raster.
-    """
+    """Obtém informações de um arquivo raster."""
     with rasterio.open(file_path) as src:
         return {
-            'path': file_path,
-            'crs': src.crs,
-            'bounds': src.bounds,
-            'width': src.width,
-            'height': src.height,
-            'count': src.count,
-            'dtype': src.dtypes[0],
-            'nodata': src.nodata,
-            'resolution': src.res,
-            'transform': src.transform
+            "path": file_path,
+            "crs": src.crs,
+            "bounds": src.bounds,
+            "width": src.width,
+            "height": src.height,
+            "count": src.count,
+            "dtype": src.dtypes[0],
+            "nodata": src.nodata,
+            "resolution": src.res,
+            "transform": src.transform,
         }
 
 
 def validate_rasters(file_list: List[str]) -> dict:
-    """
-    Valida compatibilidade entre rasters para merge.
-
-    Parameters
-    ----------
-    file_list : list
-        Lista de caminhos dos arquivos.
-
-    Returns
-    -------
-    dict
-        Informações agregadas dos rasters.
-
-    Raises
-    ------
-    ValueError
-        Se os rasters não forem compatíveis.
-    """
+    """Valida compatibilidade entre rasters para merge."""
     if not file_list:
         raise ValueError("Lista de arquivos vazia")
 
     infos = [get_raster_info(f) for f in file_list]
 
-    # Verifica CRS
-    crs_set = set(str(info['crs']) for info in infos if info['crs'])
+    # CRS
+    crs_set = set(str(info["crs"]) for info in infos if info["crs"] is not None)
     if len(crs_set) > 1:
         print(f"  Aviso: CRS diferentes detectados: {crs_set}")
-        print("  O merge usará o CRS do primeiro arquivo")
+        print("  O merge usará o CRS do primeiro arquivo (não nulo, se houver).")
 
-    # Verifica número de bandas
-    band_counts = set(info['count'] for info in infos)
+    # Bandas
+    band_counts = set(info["count"] for info in infos)
     if len(band_counts) > 1:
         raise ValueError(f"Número de bandas inconsistente: {band_counts}")
 
-    # Verifica dtype
-    dtypes = set(info['dtype'] for info in infos)
+    # dtype
+    dtypes = set(info["dtype"] for info in infos)
     if len(dtypes) > 1:
-        print(f"  Aviso: dtypes diferentes: {dtypes}")
+        print(f"  Aviso: dtypes diferentes: {dtypes} (o output usará o do primeiro)")
 
-    # Calcula bounds totais
-    all_bounds = [info['bounds'] for info in infos]
+    # bounds totais
+    all_bounds = [info["bounds"] for info in infos]
     total_bounds = (
         min(b.left for b in all_bounds),
         min(b.bottom for b in all_bounds),
         max(b.right for b in all_bounds),
-        max(b.top for b in all_bounds)
+        max(b.top for b in all_bounds),
     )
 
+    # CRS de referência: primeiro não-nulo, senão None
+    ref_crs = None
+    for inf in infos:
+        if inf["crs"] is not None:
+            ref_crs = inf["crs"]
+            break
+
     return {
-        'count': len(file_list),
-        'crs': infos[0]['crs'],
-        'band_count': infos[0]['count'],
-        'dtype': infos[0]['dtype'],
-        'nodata': infos[0]['nodata'],
-        'total_bounds': total_bounds,
-        'resolutions': [info['resolution'] for info in infos]
+        "count": len(file_list),
+        "crs": ref_crs,
+        "band_count": infos[0]["count"],
+        "dtype": infos[0]["dtype"],
+        "nodata": infos[0]["nodata"],
+        "total_bounds": total_bounds,
+        "resolutions": [info["resolution"] for info in infos],
     }
+
+
+def _pick_effective_nodata(
+    nodata_arg: Optional[float],
+    info_nodata,
+    out_dtype: str,
+    fallback_float: float = -9999.0,
+) -> Optional[float]:
+    """
+    Define um nodata efetivo robusto.
+    - Se nodata_arg foi passado -> usa
+    - Senão usa info_nodata
+    - Se ainda for None e dtype é float -> fallback_float
+    """
+    nd = nodata_arg if nodata_arg is not None else info_nodata
+    if nd is None and np.issubdtype(np.dtype(out_dtype), np.floating):
+        nd = float(fallback_float)
+    return nd
+
+
+def _sanitize_mosaic(
+    mosaic: np.ndarray,
+    out_dtype: str,
+    out_nodata: Optional[float],
+    huge_threshold: float = 1e20,
+) -> np.ndarray:
+    """
+    Limpa NaN/Inf e valores gigantes (ex.: ~1e+38) que bagunçam simbologia/estatística.
+    Para float: substitui por out_nodata (se definido). Se out_nodata None, substitui por 0.
+    """
+    arr = mosaic.astype(out_dtype, copy=True)
+
+    if np.issubdtype(arr.dtype, np.floating):
+        rep = out_nodata if out_nodata is not None else 0.0
+        # NaN/Inf
+        arr[~np.isfinite(arr)] = rep
+        # fill values gigantes (positivos e negativos)
+        arr[np.abs(arr) > huge_threshold] = rep
+
+    return arr
+
+
+def _ensure_north_up(mosaic: np.ndarray, transform: Affine) -> (np.ndarray, Affine):
+    """
+    Garante que pixel height (transform.e) seja NEGATIVO (north-up).
+    Se vier positivo, faz flip vertical nos dados e corrige o transform.
+    """
+    if transform.e < 0:
+        return mosaic, transform
+
+    # flip vertical nas linhas
+    mosaic2 = mosaic[:, ::-1, :]
+
+    # corrige transform: e negativo e ajusta f
+    new_transform = Affine(
+        transform.a, transform.b, transform.c,
+        transform.d, -transform.e, transform.f + transform.e * mosaic.shape[1]
+    )
+    return mosaic2, new_transform
+
+
+def _print_basic_checks(output_file: str):
+    """Imprime checks básicos do arquivo gerado."""
+    p = Path(output_file)
+    if not p.exists():
+        raise RuntimeError(f"Arquivo de saída não foi criado: {output_file}")
+    if p.stat().st_size == 0:
+        raise RuntimeError(f"Arquivo de saída foi criado mas está vazio (0 bytes): {output_file}")
+
+    with rasterio.open(output_file) as ds:
+        print(f"  OK: CRS={ds.crs}")
+        print(f"  OK: Bounds={ds.bounds}")
+        print(f"  OK: Res={ds.res}")
+        print(f"  OK: Transform.e (pixel height)={ds.transform.e}")
 
 
 # =============================================================================
@@ -191,64 +262,18 @@ def validate_rasters(file_list: List[str]) -> dict:
 def merge_tiffs(
     input_files: Union[str, List[str]],
     output_file: str,
-    pattern: str = '*.tif',
-    method: str = 'first',
+    pattern: str = "*.tif",
+    method: str = "first",
     nodata: Optional[float] = None,
     resolution: Optional[float] = None,
-    resampling: str = 'nearest',
-    compress: str = 'lzw',
+    resampling: str = "nearest",
+    compress: str = "lzw",
     dtype: Optional[str] = None,
-    overwrite: bool = True
+    overwrite: bool = True,
+    huge_threshold: float = 1e20,
 ) -> str:
     """
     Combina múltiplos arquivos GeoTIFF em um único mosaico.
-
-    Parameters
-    ----------
-    input_files : str or list
-        Pasta contendo os TIFFs ou lista de caminhos dos arquivos.
-    output_file : str
-        Caminho do arquivo de saída.
-    pattern : str, optional
-        Padrão glob para filtrar arquivos se input_files for pasta (default: '*.tif').
-    method : str, optional
-        Método de resolução de sobreposição:
-        - 'first': mantém primeiro valor válido (default)
-        - 'last': sobrescreve com último valor
-        - 'max': valor máximo
-        - 'min': valor mínimo
-        - 'mean': média dos valores
-    nodata : float, optional
-        Valor nodata para o mosaico. Se None, usa o valor do primeiro arquivo.
-    resolution : float, optional
-        Resolução do mosaico. Se None, usa a do primeiro arquivo.
-    resampling : str, optional
-        Método de reamostragem: 'nearest', 'bilinear', 'cubic' (default: 'nearest').
-    compress : str, optional
-        Compressão: 'lzw', 'deflate', 'packbits', 'none' (default: 'lzw').
-    dtype : str, optional
-        Tipo de dado de saída. Se None, usa o tipo do primeiro arquivo.
-    overwrite : bool, optional
-        Se True, sobrescreve arquivo existente (default: True).
-
-    Returns
-    -------
-    str
-        Caminho do arquivo de saída.
-
-    Examples
-    --------
-    # Merge de todos os TIFFs em uma pasta
-    merge_tiffs('./tiles/', 'mosaico.tif')
-
-    # Merge com filtro de nome
-    merge_tiffs('./tiles/', 'dem.tif', pattern='*_dem.tif')
-
-    # Merge usando valor máximo nas sobreposições
-    merge_tiffs('./tiles/', 'chm_max.tif', method='max')
-
-    # Lista específica de arquivos
-    merge_tiffs(['tile1.tif', 'tile2.tif'], 'merged.tif')
     """
     print("=" * 60)
     print("MERGE DE RASTERS GEOTIFF")
@@ -284,17 +309,16 @@ def merge_tiffs(
 
     info = validate_rasters(file_list)
 
-    print(f"  CRS: {info['crs']}")
+    print(f"  CRS (referência): {info['crs']}")
     print(f"  Bandas: {info['band_count']}")
-    print(f"  Dtype: {info['dtype']}")
-    print(f"  NoData: {info['nodata']}")
+    print(f"  Dtype (referência): {info['dtype']}")
+    print(f"  NoData (1º arquivo): {info['nodata']}")
     print(f"  Bounds: {info['total_bounds']}")
 
-    # Verifica arquivo de saída
+    # Saída
     output_path = Path(output_file)
     if output_path.exists() and not overwrite:
         raise FileExistsError(f"Arquivo já existe: {output_file}")
-
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     # -------------------------------------------------------------------------
@@ -307,85 +331,112 @@ def merge_tiffs(
     src_files = [rasterio.open(f) for f in file_list]
 
     try:
-        # Configuração do merge
         merge_kwargs = {}
 
-        # Método de merge
+        # Método
         if method in MERGE_METHODS:
-            merge_kwargs['method'] = MERGE_METHODS[method]
+            merge_kwargs["method"] = MERGE_METHODS[method]
         else:
             raise ValueError(f"Método inválido: {method}. Use: {list(MERGE_METHODS.keys())}")
 
-        # NoData
+        # Dtype de saída desejado
+        out_dtype = dtype if dtype else info["dtype"]
+
+        # NoData: só passa para o merge se o arquivo de entrada tiver nodata definido
+        # ou se o usuário passou explicitamente. Caso contrário, deixa o merge usar
+        # o nodata do próprio arquivo (mesmo que seja None).
         if nodata is not None:
-            merge_kwargs['nodata'] = nodata
-        elif info['nodata'] is not None:
-            merge_kwargs['nodata'] = info['nodata']
+            merge_kwargs["nodata"] = float(nodata)
+            print(f"  Usando nodata explícito: {nodata}")
+        elif info["nodata"] is not None:
+            merge_kwargs["nodata"] = float(info["nodata"])
+            print(f"  Usando nodata do arquivo: {info['nodata']}")
 
         # Resolução
         if resolution is not None:
-            merge_kwargs['res'] = resolution
+            merge_kwargs["res"] = float(resolution)
 
         # Reamostragem
         resampling_methods = {
-            'nearest': Resampling.nearest,
-            'bilinear': Resampling.bilinear,
-            'cubic': Resampling.cubic,
-            'lanczos': Resampling.lanczos
+            "nearest": Resampling.nearest,
+            "bilinear": Resampling.bilinear,
+            "cubic": Resampling.cubic,
+            "lanczos": Resampling.lanczos,
         }
         if resampling in resampling_methods:
-            merge_kwargs['resampling'] = resampling_methods[resampling]
+            merge_kwargs["resampling"] = resampling_methods[resampling]
+        else:
+            raise ValueError(f"Resampling inválido: {resampling}")
 
-        # Executa merge
+        # Executa merge (mosaic em memória)
         mosaic, out_transform = merge(src_files, **merge_kwargs)
+
+        # Garante north-up
+        mosaic, out_transform = _ensure_north_up(mosaic, out_transform)
 
         print(f"  Dimensões do mosaico: {mosaic.shape[2]} x {mosaic.shape[1]} pixels")
         print(f"  Bandas: {mosaic.shape[0]}")
+        print(f"  Transform.e (pixel height): {out_transform.e}")
 
     finally:
-        # Fecha todos os arquivos
         for src in src_files:
             src.close()
 
     # -------------------------------------------------------------------------
-    # 4. SALVAMENTO
+    # 4. SALVAMENTO (ROBUSTO)
     # -------------------------------------------------------------------------
     print(f"\n[4/4] Salvando mosaico: {output_file}")
 
-    # Configurações de saída
-    out_dtype = dtype if dtype else info['dtype']
-    out_nodata = nodata if nodata is not None else info['nodata']
+    out_dtype = dtype if dtype else info["dtype"]
+    out_nodata = _pick_effective_nodata(nodata, info["nodata"], out_dtype)
 
-    compress_opts = {} if compress == 'none' else {'compress': compress}
+    # sanitiza dados (remove NaN/Inf e valores gigantes)
+    mosaic_to_write = _sanitize_mosaic(mosaic, out_dtype=out_dtype, out_nodata=out_nodata, huge_threshold=huge_threshold)
 
-    # Metadados
+    compress_opts = {} if compress == "none" else {"compress": compress}
+
     out_meta = {
-        'driver': 'GTiff',
-        'height': mosaic.shape[1],
-        'width': mosaic.shape[2],
-        'count': mosaic.shape[0],
-        'dtype': out_dtype,
-        'crs': info['crs'],
-        'transform': out_transform,
-        'nodata': out_nodata,
-        **compress_opts
+        "driver": "GTiff",
+        "height": mosaic_to_write.shape[1],
+        "width": mosaic_to_write.shape[2],
+        "count": mosaic_to_write.shape[0],
+        "dtype": out_dtype,
+        "crs": info["crs"],
+        "transform": out_transform,
+        "nodata": out_nodata,
+        "tiled": True,
+        "BIGTIFF": "IF_SAFER",
+        **compress_opts,
     }
 
-    # Salva
-    with rasterio.open(output_file, 'w', **out_meta) as dst:
-        dst.write(mosaic.astype(out_dtype))
+    # Melhor compactação p/ float
+    if np.issubdtype(np.dtype(out_dtype), np.floating) and compress != "none":
+        out_meta["predictor"] = 3
 
-    # Estatísticas
-    output_size = output_path.stat().st_size / (1024 * 1024)
-    print(f"  Tamanho: {output_size:.2f} MB")
+    # Escreve
+    with rasterio.open(output_file, "w", **out_meta) as dst:
+        dst.write(mosaic_to_write)
 
-    # Estatísticas dos dados
-    valid_data = mosaic[mosaic != out_nodata]
-    if len(valid_data) > 0:
-        print(f"\n  Estatísticas:")
-        print(f"    Min:  {valid_data.min():.4f}")
-        print(f"    Max:  {valid_data.max():.4f}")
-        print(f"    Mean: {valid_data.mean():.4f}")
+    # Checkpoints
+    size_mb = output_path.stat().st_size / (1024 * 1024)
+    print(f"  Tamanho: {size_mb:.2f} MB")
+
+    # Estatísticas (robustas)
+    if out_nodata is None:
+        valid = mosaic_to_write[np.isfinite(mosaic_to_write)]
+    else:
+        valid = mosaic_to_write[(mosaic_to_write != out_nodata) & np.isfinite(mosaic_to_write)]
+
+    if valid.size > 0:
+        print("\n  Estatísticas (válidos):")
+        print(f"    Min:  {float(valid.min()):.4f}")
+        print(f"    Max:  {float(valid.max()):.4f}")
+        print(f"    Mean: {float(valid.mean()):.4f}")
+    else:
+        print("\n  Aviso: mosaico sem pixels válidos após sanitização (tudo nodata).")
+
+    # Confirma leitura do arquivo final
+    _print_basic_checks(output_file)
 
     print("\n" + "=" * 60)
     print("MERGE CONCLUÍDO")
@@ -395,6 +446,10 @@ def merge_tiffs(
     return output_file
 
 
+# =============================================================================
+# MERGE POR GRUPOS (CORRIGIDO)
+# =============================================================================
+
 def merge_by_groups(
     input_folder: str,
     output_folder: str,
@@ -402,60 +457,48 @@ def merge_by_groups(
     **kwargs
 ) -> List[str]:
     """
-    Agrupa arquivos por padrão de nome e faz merge separado de cada grupo.
+    Faz mosaicos separados para cada "grupo" identificado por `group_pattern`.
 
-    Parameters
-    ----------
-    input_folder : str
-        Pasta com os arquivos.
-    output_folder : str
-        Pasta de saída.
-    group_pattern : str
-        Parte comum do nome para agrupar (ex: '_dem' agrupa todos *_dem.tif).
-    **kwargs
-        Argumentos adicionais para merge_tiffs.
+    Exemplos:
+      group_pattern = "_max"   -> agrupa todos os *{group_pattern}.tif (ex: elev_max, p95_max, etc.)
+      group_pattern = "_chm"   -> agrupa todos os *{group_pattern}.tif
 
-    Returns
-    -------
-    list
-        Lista de arquivos gerados.
-
-    Examples
-    --------
-    # Agrupa por sufixo (tile_001_dem.tif, tile_002_dem.tif -> dem_mosaic.tif)
-    merge_by_groups('./tiles/', './mosaics/', '_dem')
+    Observação:
+      Se seus arquivos são como:
+        elev_max_tile001.tif, elev_max_tile002.tif, p95_max_tile001.tif ...
+      então group_pattern="_max" e o grupo será pelo prefixo antes de "_max".
     """
     input_path = Path(input_folder)
     output_path = Path(output_folder)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    # Encontra todos os TIFFs
-    all_files = list(input_path.glob('*.tif'))
+    all_files = sorted(input_path.glob("*.tif"))
+    if not all_files:
+        raise ValueError("Nenhum .tif encontrado na pasta de entrada.")
 
-    # Agrupa por padrão
-    groups = {}
+    groups: Dict[str, List[str]] = {}
+
     for f in all_files:
-        if group_pattern in f.stem:
-            # Extrai o identificador do grupo
-            group_id = f.stem.split(group_pattern)[-1] if group_pattern in f.stem else group_pattern
-            group_key = group_pattern.strip('_')
+        stem = f.stem
+        if group_pattern not in stem:
+            continue
 
-            if group_key not in groups:
-                groups[group_key] = []
-            groups[group_key].append(str(f))
+        # Grupo = parte antes do group_pattern (ex: "elev" em "elev_max_tile001")
+        prefix = stem.split(group_pattern)[0].rstrip("_-")
+        group_name = prefix if prefix else group_pattern.strip("_-")
+        groups.setdefault(group_name, []).append(str(f))
 
     print(f"Grupos encontrados: {list(groups.keys())}")
 
-    results = []
+    results: List[str] = []
     for group_name, files in groups.items():
         print(f"\n{'='*60}")
         print(f"Processando grupo: {group_name} ({len(files)} arquivos)")
-        print('='*60)
+        print(f"{'='*60}")
 
-        output_file = output_path / f"{group_name}_mosaic.tif"
+        out_file = output_path / f"{group_name}{group_pattern}_mosaic.tif"
         try:
-            result = merge_tiffs(files, str(output_file), **kwargs)
-            results.append(result)
+            results.append(merge_tiffs(files, str(out_file), **kwargs))
         except Exception as e:
             print(f"Erro no grupo {group_name}: {e}")
 
@@ -466,26 +509,29 @@ def merge_by_groups(
 # EXECUÇÃO
 # =============================================================================
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(
-        description='Combina múltiplos GeoTIFFs em um mosaico'
+        description="Combina múltiplos GeoTIFFs em um mosaico (robusto)"
     )
-    parser.add_argument('input', help='Pasta com TIFFs ou arquivo único')
-    parser.add_argument('output', help='Arquivo de saída')
-    parser.add_argument('-p', '--pattern', default='*.tif',
-                        help='Padrão glob para filtrar arquivos (default: *.tif)')
-    parser.add_argument('-m', '--method', choices=['first', 'last', 'max', 'min', 'mean'],
-                        default='first', help='Método de merge (default: first)')
-    parser.add_argument('--nodata', type=float, help='Valor nodata')
-    parser.add_argument('--resolution', type=float, help='Resolução do mosaico')
-    parser.add_argument('--resampling', choices=['nearest', 'bilinear', 'cubic'],
-                        default='nearest', help='Método de reamostragem')
-    parser.add_argument('--compress', choices=['lzw', 'deflate', 'packbits', 'none'],
-                        default='lzw', help='Compressão (default: lzw)')
-    parser.add_argument('--dtype', choices=['float32', 'float64', 'int16', 'int32', 'uint8', 'uint16'],
-                        help='Tipo de dado de saída')
+    parser.add_argument("input", help="Pasta com TIFFs ou arquivo único")
+    parser.add_argument("output", help="Arquivo de saída")
+    parser.add_argument("-p", "--pattern", default="*.tif",
+                        help="Padrão glob para filtrar arquivos (default: *.tif)")
+    parser.add_argument("-m", "--method", choices=list(MERGE_METHODS.keys()),
+                        default="first", help="Método de merge (default: first)")
+    parser.add_argument("--nodata", type=float, help="Valor nodata (se não informar, tenta usar do 1º; se None e float, usa -9999)")
+    parser.add_argument("--resolution", type=float, help="Resolução do mosaico (se None, usa a do rasterio.merge)")
+    parser.add_argument("--resampling", choices=["nearest", "bilinear", "cubic", "lanczos"],
+                        default="nearest", help="Método de reamostragem (default: nearest)")
+    parser.add_argument("--compress", choices=["lzw", "deflate", "packbits", "none"],
+                        default="lzw", help="Compressão (default: lzw)")
+    parser.add_argument("--dtype", choices=["float32", "float64", "int16", "int32", "uint8", "uint16"],
+                        help="Tipo de dado de saída (se None, usa o do primeiro)")
+    parser.add_argument("--no-overwrite", action="store_true", help="Não sobrescrever arquivo de saída se existir")
+    parser.add_argument("--huge-threshold", type=float, default=1e20,
+                        help="Valores maiores que isso (em float) viram nodata (default: 1e20)")
 
     args = parser.parse_args()
 
@@ -498,5 +544,7 @@ if __name__ == '__main__':
         resolution=args.resolution,
         resampling=args.resampling,
         compress=args.compress,
-        dtype=args.dtype
+        dtype=args.dtype,
+        overwrite=(not args.no_overwrite),
+        huge_threshold=args.huge_threshold,
     )

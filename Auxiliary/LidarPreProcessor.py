@@ -182,18 +182,26 @@ def setup_logging(log_file: Optional[str] = None) -> logging.Logger:
         datefmt='%Y-%m-%d %H:%M:%S'
     )
 
-    # Console handler
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
-    console_handler.setFormatter(formatter)
-    logger.addHandler(console_handler)
+    # Evita adicionar handlers duplicados
+    if not logger.handlers:
+        # Console handler
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.INFO)
+        console_handler.setFormatter(formatter)
+        logger.addHandler(console_handler)
 
-    # File handler
+    # File handler (adiciona apenas se especificado e não existir)
     if log_file:
-        file_handler = logging.FileHandler(log_file, encoding='utf-8')
-        file_handler.setLevel(logging.DEBUG)
-        file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
+        # Verifica se já existe um FileHandler para este arquivo
+        has_file_handler = any(
+            isinstance(h, logging.FileHandler) and h.baseFilename == str(Path(log_file).resolve())
+            for h in logger.handlers
+        )
+        if not has_file_handler:
+            file_handler = logging.FileHandler(log_file, encoding='utf-8')
+            file_handler.setLevel(logging.DEBUG)
+            file_handler.setFormatter(formatter)
+            logger.addHandler(file_handler)
 
     return logger
 

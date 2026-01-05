@@ -230,8 +230,6 @@ predict_volume(
 
 ## Referencias
 
-- Gorgens, E. B., et al. (2015). Estimacao do volume de arvores utilizando redes neurais artificiais. *Revista Arvore*.
-- Leite, H. G., et al. (2020). LiDAR aplicado ao inventario florestal. *CERNE*.
 
 ---
 
@@ -247,8 +245,3 @@ Este projeto e parte de uma dissertacao de mestrado e esta disponivel para fins 
   Diamantina, MG - Brasil
 </p>
 
-<p align="center">
-  <a href="https://sites.google.com/view/treelab-ufvjm">Website</a> •
-  <a href="https://github.com/Gorgens">GitHub</a> •
-  <a href="mailto:eric.gorgens@ufvjm.edu.br">Contato</a>
-</p>

@@ -506,6 +506,103 @@ def merge_by_groups(
 
 
 # =============================================================================
+# MERGE BATCH (AUTO-DETECT PATTERNS)
+# =============================================================================
+
+def merge_batch(
+    input_folder: str,
+    output_folder: str,
+    method: str = "first",
+    **kwargs
+) -> List[str]:
+    """
+    Detecta automaticamente todos os patterns (sufixos) nos tiles e faz
+    um mosaico para cada pattern.
+
+    Exemplo:
+        Se a pasta contém:
+            tile_001_max.tif, tile_002_max.tif,
+            tile_001_min.tif, tile_002_min.tif,
+            tile_001_p90.tif, tile_002_p90.tif
+
+        Serão criados:
+            max_mosaic.tif, min_mosaic.tif, p90_mosaic.tif
+
+    Args:
+        input_folder: Pasta com os tiles
+        output_folder: Pasta de saída para os mosaicos
+        method: Método de merge (first, last, max, min, mean)
+        **kwargs: Argumentos adicionais para merge_tiffs
+
+    Returns:
+        Lista de arquivos de mosaico criados
+    """
+    import re
+
+    input_path = Path(input_folder)
+    output_path = Path(output_folder)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    all_files = sorted(input_path.glob("*.tif"))
+    if not all_files:
+        raise ValueError(f"Nenhum .tif encontrado em: {input_folder}")
+
+    print("=" * 60)
+    print("MERGE BATCH - DETECÇÃO AUTOMÁTICA DE PATTERNS")
+    print("=" * 60)
+    print(f"Pasta: {input_folder}")
+    print(f"Total de tiles: {len(all_files)}")
+
+    # Detecta patterns pelo sufixo (última parte após último underscore)
+    patterns: Dict[str, List[str]] = {}
+
+    for f in all_files:
+        stem = f.stem
+        # Extrai o sufixo (ex: "tile_001_max" -> "max")
+        parts = stem.rsplit("_", 1)
+        if len(parts) == 2:
+            suffix = parts[1]
+        else:
+            suffix = stem
+
+        patterns.setdefault(suffix, []).append(str(f))
+
+    print(f"\nPatterns detectados: {list(patterns.keys())}")
+    for p, files in patterns.items():
+        print(f"  {p}: {len(files)} tiles")
+
+    # Processa cada pattern
+    results: List[str] = []
+    total = len(patterns)
+
+    for i, (pattern_name, files) in enumerate(sorted(patterns.items()), 1):
+        print(f"\n{'=' * 60}")
+        print(f"[{i}/{total}] Processando: {pattern_name} ({len(files)} tiles)")
+        print("=" * 60)
+
+        out_file = output_path / f"{pattern_name}_mosaic.tif"
+
+        try:
+            result = merge_tiffs(
+                input_files=files,
+                output_file=str(out_file),
+                method=method,
+                **kwargs
+            )
+            results.append(result)
+        except Exception as e:
+            print(f"ERRO no pattern {pattern_name}: {e}")
+            import traceback
+            traceback.print_exc()
+
+    print(f"\n{'=' * 60}")
+    print(f"BATCH CONCLUÍDO: {len(results)}/{total} mosaicos criados")
+    print("=" * 60)
+
+    return results
+
+
+# =============================================================================
 # EXECUÇÃO
 # =============================================================================
 
@@ -516,7 +613,9 @@ if __name__ == "__main__":
         description="Combina múltiplos GeoTIFFs em um mosaico (robusto)"
     )
     parser.add_argument("input", help="Pasta com TIFFs ou arquivo único")
-    parser.add_argument("output", help="Arquivo de saída")
+    parser.add_argument("output", help="Arquivo/pasta de saída")
+    parser.add_argument("-b", "--batch", action="store_true",
+                        help="Modo batch: detecta todos os patterns e cria um mosaico para cada")
     parser.add_argument("-p", "--pattern", default="*.tif",
                         help="Padrão glob para filtrar arquivos (default: *.tif)")
     parser.add_argument("-m", "--method", choices=list(MERGE_METHODS.keys()),
@@ -535,16 +634,32 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    merge_tiffs(
-        input_files=args.input,
-        output_file=args.output,
-        pattern=args.pattern,
-        method=args.method,
-        nodata=args.nodata,
-        resolution=args.resolution,
-        resampling=args.resampling,
-        compress=args.compress,
-        dtype=args.dtype,
-        overwrite=(not args.no_overwrite),
-        huge_threshold=args.huge_threshold,
-    )
+    if args.batch:
+        # Modo batch: input=pasta de tiles, output=pasta de saída
+        merge_batch(
+            input_folder=args.input,
+            output_folder=args.output,
+            method=args.method,
+            nodata=args.nodata,
+            resolution=args.resolution,
+            resampling=args.resampling,
+            compress=args.compress,
+            dtype=args.dtype,
+            overwrite=(not args.no_overwrite),
+            huge_threshold=args.huge_threshold,
+        )
+    else:
+        # Modo normal: merge único
+        merge_tiffs(
+            input_files=args.input,
+            output_file=args.output,
+            pattern=args.pattern,
+            method=args.method,
+            nodata=args.nodata,
+            resolution=args.resolution,
+            resampling=args.resampling,
+            compress=args.compress,
+            dtype=args.dtype,
+            overwrite=(not args.no_overwrite),
+            huge_threshold=args.huge_threshold,
+        )

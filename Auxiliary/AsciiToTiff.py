@@ -27,6 +27,8 @@ import numpy as np
 from pathlib import Path
 from typing import Optional, Dict, Any
 
+from openpyxl.styles.builtins import output
+
 try:
     import rasterio
     from rasterio.transform import from_origin

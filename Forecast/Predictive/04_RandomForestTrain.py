@@ -13,13 +13,7 @@ Workflow:
     6. Geração de gráficos diagnósticos
     7. Exportação do modelo treinado (.pkl)
 
-Variáveis selecionadas (saída do 02_VariablesCorrelation.py / 03_FeatureSelection.py):
-    - Elev P90: Percentil 90 de altura (estrutura dominante)
-    - Elev P60: Percentil 60 de altura (estrutura média)
-    - Elev maximum: Altura máxima (árvores emergentes)
-    - ROTACAO: Número da rotação florestal
-    - REGIONAL: Código da regional
-    - Idade (meses): Idade do plantio
+Variáveis selecionadas (saída do 02_VariablesCorrelation.py / 03_FeatureSelection.py)
 
 Saídas:
     - Models/RF_Regressor.pkl: Modelo treinado serializado
@@ -55,9 +49,8 @@ MODEL_DIR = Path(r"G:\PycharmProjects\Mestrado\Forecast\Predictive\Models")
 
 # Variáveis do modelo (definidas na etapa de seleção de features)
 FEATURE_NAMES = [
-    'Elev P90',        # Percentil 90 - estrutura dominante
-    'Elev P60',        # Percentil 60 - estrutura média do dossel
-    'Elev maximum',    # Altura máxima - árvores emergentes
+    'Elev P99', 'Elev variance',
+    'Elev L1',
     'ROTACAO',         # Rotação florestal
     'REGIONAL',        # Regional
     'Idade (meses)'    # Idade do plantio
@@ -188,7 +181,7 @@ def plot_diagnostics(y_true, y_pred, metrics, output_path=None):
     fig, axes = plt.subplots(1, 3, figsize=(14, 4.5))
 
     # Resíduos relativos
-    residuals_pct = (y_true - y_pred) / y_true
+    residuals_pct = (y_pred - y_true) / y_true
 
     # --- (a) Observado vs Predito ---
     ax1 = axes[0]

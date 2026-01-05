@@ -230,7 +230,7 @@ def generate_diagnostic_plots(result, output_dir="../../Data/Plots"):
     axis[0].set_title(f"Observado vs. Estimado\nR²={r2_cv:.3f}, RMSE={rmse_cv:.2f}")
 
     # Gráfico 2: Resíduos vs Predito
-    residuals_raw_cv = (y - y_pred_cv) / y
+    residuals_raw_cv = (y_pred_cv - y) / y
     axis[1].scatter(y_pred_cv, residuals_raw_cv, alpha=0.7, color=COLOR_PRIMARY)
     axis[1].set_xlabel("VTCC Estimado (m³/ha)")
     axis[1].set_ylabel("Resíduos Relativos")

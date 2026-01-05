@@ -21,7 +21,7 @@ Requisitos:
     - Python 3.8+
 
 Autor: Leonardo Ippolito Rodrigues
-Data: 2024
+Data: 2026
 Projeto: Mestrado - Predicao de Volume Florestal com LiDAR
 """
 

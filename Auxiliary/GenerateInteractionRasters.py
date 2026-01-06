@@ -47,6 +47,76 @@ def load_raster(raster_path: str) -> Tuple[np.ndarray, dict]:
     return data, meta
 
 
+def resample_to_reference(source_path: str, reference_path: str,
+                          resampling_method: str = 'nearest',
+                          nodata: float = -9999.0) -> Tuple[np.ndarray, dict]:
+    """
+    Reamostra um raster para coincidir com a grade de referência.
+
+    Áreas fora do extent original do source ficam como nodata.
+
+    Parameters
+    ----------
+    source_path : str
+        Caminho do raster a ser reamostrado.
+    reference_path : str
+        Caminho do raster de referência (define a grade de saída).
+    resampling_method : str
+        Método de reamostragem: 'nearest', 'bilinear', 'cubic'.
+        Use 'nearest' para dados categóricos/dummy.
+    nodata : float
+        Valor nodata para áreas sem dados.
+
+    Returns
+    -------
+    tuple
+        (dados reamostrados, metadados da referência)
+    """
+    from rasterio.warp import reproject, Resampling
+    from rasterio.crs import CRS
+
+    # Mapeia método de reamostragem
+    resampling_map = {
+        'nearest': Resampling.nearest,
+        'bilinear': Resampling.bilinear,
+        'cubic': Resampling.cubic
+    }
+    resampling = resampling_map.get(resampling_method, Resampling.nearest)
+
+    # CRS padrão caso não exista
+    default_crs = CRS.from_epsg(31983)  # SIRGAS 2000 UTM 23S
+
+    with rasterio.open(reference_path) as ref:
+        ref_meta = ref.meta.copy()
+        ref_shape = (ref.height, ref.width)
+        ref_transform = ref.transform
+        ref_crs = ref.crs if ref.crs is not None else default_crs
+
+    with rasterio.open(source_path) as src:
+        src_data = src.read(1)
+        src_transform = src.transform
+        src_crs = src.crs if src.crs is not None else ref_crs
+        src_nodata = src.nodata if src.nodata is not None else nodata
+
+    # Cria array de destino PREENCHIDO com nodata
+    dst_data = np.full(ref_shape, nodata, dtype=np.float32)
+
+    # Reamostra - apenas preenche onde há dados no source
+    reproject(
+        source=src_data,
+        destination=dst_data,
+        src_transform=src_transform,
+        src_crs=src_crs,
+        dst_transform=ref_transform,
+        dst_crs=ref_crs,
+        resampling=resampling,
+        src_nodata=src_nodata,
+        dst_nodata=nodata
+    )
+
+    return dst_data, ref_meta
+
+
 def save_raster(data: np.ndarray, meta: dict, output_path: str, description: str = None):
     """
     Salva um array numpy como raster GeoTIFF.
@@ -176,7 +246,12 @@ def generate_interaction_rasters(
 
     # Carrega primeiro raster base para obter metadados de referência
     first_base_name = list(base_rasters.keys())[0]
-    _, ref_meta = load_raster(base_rasters[first_base_name])
+    first_base_path = base_rasters[first_base_name]
+    ref_data, ref_meta = load_raster(first_base_path)
+    ref_shape = ref_data.shape
+
+    if verbose:
+        print(f"Grade de referência: {ref_shape[1]} x {ref_shape[0]} pixels")
 
     # Cache para rasters já carregados
     base_cache = {}
@@ -185,9 +260,22 @@ def generate_interaction_rasters(
     interaction_count = 0
 
     for ind_name, ind_path in indicator_rasters.items():
-        # Carrega indicador (com cache)
+        # Carrega indicador (com cache e reamostragem se necessário)
         if ind_name not in indicator_cache:
-            indicator_cache[ind_name], _ = load_raster(ind_path)
+            ind_data, _ = load_raster(ind_path)
+
+            # Verifica se precisa reamostrar
+            if ind_data.shape != ref_shape:
+                if verbose:
+                    print(f"  Reamostrando {ind_name}: {ind_data.shape} -> {ref_shape}")
+                ind_data, _ = resample_to_reference(
+                    source_path=ind_path,
+                    reference_path=first_base_path,
+                    resampling_method='nearest',  # nearest para dados categóricos
+                    nodata=nodata  # áreas fora do extent = nodata
+                )
+
+            indicator_cache[ind_name] = ind_data
 
         indicator_data = indicator_cache[ind_name]
 

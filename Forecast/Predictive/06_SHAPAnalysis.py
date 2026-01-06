@@ -297,28 +297,52 @@ def plot_summary_bar(shap_values: np.ndarray, feature_names: List[str],
 
 
 def plot_beeswarm(shap_values: np.ndarray, X: np.ndarray, feature_names: List[str],
-                  output_path: Path = None, top_n: int = 20):
+                  output_path: Path = None, top_n: int = 10):
     """
     Gera beeswarm plot mostrando distribuição dos valores SHAP.
 
     Este gráfico mostra:
     - Eixo X: valor SHAP (impacto na predição)
-    - Eixo Y: features ordenadas por importância
+    - Eixo Y: features ordenadas por importância (apenas top_n)
     - Cor: valor da feature (azul=baixo, vermelho=alto)
-    """
-    fig, ax = plt.subplots(figsize=(12, 10))
 
-    # Cria objeto Explanation para usar shap.plots
+    Parameters
+    ----------
+    shap_values : np.ndarray
+        Valores SHAP calculados.
+    X : np.ndarray
+        Matriz de features.
+    feature_names : list
+        Nomes das features.
+    output_path : Path, optional
+        Caminho para salvar a figura.
+    top_n : int
+        Número de features a mostrar.
+    """
+    # Calcula importância e seleciona top N
+    mean_abs_shap = np.abs(shap_values).mean(axis=0)
+    top_indices = np.argsort(mean_abs_shap)[::-1][:top_n]
+
+    # Filtra para top N features apenas
+    shap_values_filtered = shap_values[:, top_indices]
+    X_filtered = X[:, top_indices]
+    feature_names_filtered = [feature_names[i] for i in top_indices]
+
+    # Altura dinâmica
+    fig_height = max(6, top_n * 0.5)
+    fig, ax = plt.subplots(figsize=(12, fig_height))
+
+    # Cria objeto Explanation com dados filtrados
     explanation = shap.Explanation(
-        values=shap_values,
-        base_values=np.zeros(len(shap_values)),
-        data=X,
-        feature_names=feature_names
+        values=shap_values_filtered,
+        base_values=np.zeros(len(shap_values_filtered)),
+        data=X_filtered,
+        feature_names=feature_names_filtered
     )
 
     shap.plots.beeswarm(explanation, max_display=top_n, show=False)
 
-    plt.title('Distribuição dos Valores SHAP por Feature')
+    plt.title(f'Distribuição dos Valores SHAP (Top {top_n} Variáveis)')
     plt.tight_layout()
 
     if output_path:

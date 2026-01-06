@@ -1,5 +1,5 @@
 """
-06_Validation.py - Validação do Modelo por Talhão
+07_Validation.py - Validação do Modelo por Talhão
 
 Este script realiza a validação do modelo de predição de volume florestal
 comparando os resultados preditos (média por talhão) com os valores de referência (IFPc).

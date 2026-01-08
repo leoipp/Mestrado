@@ -45,7 +45,7 @@ from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
 # =============================================================================
 
 # Caminhos - ALTERE CONFORME NECESSÁRIO
-INPUT_FILE = r"G:\PycharmProjects\Mestrado\Forecast\Predictive\Results\RF_Predict_Results.xlsx"
+INPUT_FILE = r"G:\PycharmProjects\Mestrado\Forecast\Predictive\Results\raster_stats_consolidado.xlsx"
 SHEET_NAME = "CONSISTIDO"
 OUTPUT_DIR = Path(r"G:\PycharmProjects\Mestrado\Forecast\Predictive\Results")
 
@@ -220,11 +220,11 @@ def plot_residuals_vs_predicted(y_obs, y_pred, ax=None, relative=True):
         fig, ax = plt.subplots(figsize=(6, 5))
 
     if relative:
-        residuals = ((y_obs - y_pred) / y_obs) * 100
+        residuals = ((y_pred - y_obs) / y_obs) * 100
         ylabel = 'Resíduos Relativos (%)'
         ylim = (-100, 100)
     else:
-        residuals = y_obs - y_pred
+        residuals = y_pred - y_obs
         ylabel = 'Resíduos (m³/ha)'
         ylim = None
 

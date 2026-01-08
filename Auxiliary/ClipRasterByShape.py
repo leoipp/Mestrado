@@ -143,7 +143,9 @@ def clip_raster_by_shape(
         print(f"  NoData: {raster_nodata}")
 
         # Reprojetar shapefile se necessário
-        if gdf.crs != raster_crs:
+        if raster_crs is None:
+            print(f"\n  AVISO: Raster sem CRS definido. Assumindo mesmo CRS do shapefile.")
+        elif gdf.crs != raster_crs:
             print(f"\n  Reprojetando shapefile de {gdf.crs} para {raster_crs}...")
             gdf = gdf.to_crs(raster_crs)
 

@@ -1,11 +1,12 @@
 """
 PredictVolume.py - Predição de Volume Florestal a partir de Rasters LiDAR
 
-Este script aplica um modelo Random Forest treinado para predizer volume
+Este script aplica modelos treinados (Random Forest ou MLP) para predizer volume
 florestal (VTCC) a partir de rasters de métricas LiDAR.
 
 Funcionalidades:
-    - Carrega modelo treinado (.pkl) do pipeline 04_RandomForestTrain.py
+    - Carrega modelo treinado (.pkl ou .pt)
+    - Suporte a Random Forest (.pkl) e MLP/PyTorch (.pt)
     - Lê múltiplos rasters (uma banda por variável)
     - Alinha e reprojeta rasters automaticamente
     - Gera raster de predição (volume estimado)
@@ -14,18 +15,19 @@ Funcionalidades:
 
 Entradas:
     - Rasters GeoTIFF das variáveis (Elev_P90.tif, Elev_P60.tif, etc.)
-    - Modelo treinado (.pkl)
+    - Modelo treinado (.pkl para sklearn ou .pt para PyTorch)
     - Variáveis auxiliares (ROTACAO, REGIONAL, Idade) como rasters TIF
 
 Saídas:
     - {nome}_volume_estimado.tif: Predição de VTCC (m³/ha)
-    - {nome}_volume_incerteza.tif: Desvio padrão da predição
+    - {nome}_volume_incerteza.tif: Desvio padrão da predição (apenas RF)
 
 Dependências:
     - numpy
     - rasterio
     - joblib
     - scikit-learn
+    - torch (opcional, para modelos MLP)
 
 Autor: Leonardo Ippolito Rodrigues
 Data: 2024
@@ -33,6 +35,7 @@ Projeto: Mestrado - Predição de Volume Florestal com LiDAR
 """
 
 import numpy as np
+import re
 from pathlib import Path
 from typing import Optional, List, Dict, Tuple, Union
 from datetime import datetime
@@ -49,86 +52,313 @@ try:
 except ImportError:
     raise ImportError("joblib é necessário. Execute: pip install joblib")
 
-
-# =============================================================================
-# CONFIGURAÇÕES PADRÃO
-# =============================================================================
-
-# Variáveis esperadas pelo modelo (ordem importa!)
-DEFAULT_FEATURE_ORDER = [
-    'Elev P90',
-    'Elev P60',
-    'Elev maximum',
-    'ROTACAO',
-    'REGIONAL',
-    'Idade (meses)'
-]
-
-# Mapeamento de nomes de arquivo para variáveis
-# Usado para detectar automaticamente variáveis a partir de nomes de arquivos
-DEFAULT_FILE_MAPPING = {
-    # Métricas LiDAR
-    'elev_p90': 'Elev P90',
-    'elev p90': 'Elev P90',
-    'p90': 'Elev P90',
-    'elev_p60': 'Elev P60',
-    'elev p60': 'Elev P60',
-    'p60': 'Elev P60',
-    'elev_maximum': 'Elev maximum',
-    'elev_max': 'Elev maximum',
-    'maximum': 'Elev maximum',
-    'max': 'Elev maximum',
-    # Variáveis auxiliares (rasters)
-    'rotacao': 'ROTACAO',
-    'rotation': 'ROTACAO',
-    'regional': 'REGIONAL',
-    'region': 'REGIONAL',
-    'idade': 'Idade (meses)',
-    'age': 'Idade (meses)',
-    'idade_meses': 'Idade (meses)',
-}
+# PyTorch (opcional, para modelos MLP)
+try:
+    import torch
+    import torch.nn as nn
+    HAS_TORCH = True
+except ImportError:
+    HAS_TORCH = False
 
 
 # =============================================================================
-# FUNÇÕES AUXILIARES
+# CLASSE MLP (compatível com 05_NeuralNetworkTrain.py)
+# =============================================================================
+
+if HAS_TORCH:
+    class MLP(nn.Module):
+        """Multi-Layer Perceptron para regressão."""
+
+        def __init__(
+            self,
+            input_size: int,
+            hidden_sizes: List[int] = [64, 32],
+            dropout_rate: float = 0.2,
+            activation: str = 'relu'
+        ):
+            super(MLP, self).__init__()
+
+            activations = {
+                'relu': nn.ReLU(),
+                'leaky_relu': nn.LeakyReLU(0.1),
+                'elu': nn.ELU(),
+                'tanh': nn.Tanh(),
+                'selu': nn.SELU()
+            }
+            self.activation = activations.get(activation, nn.ReLU())
+
+            layers = []
+            prev_size = input_size
+
+            for hidden_size in hidden_sizes:
+                layers.extend([
+                    nn.Linear(prev_size, hidden_size),
+                    nn.BatchNorm1d(hidden_size),
+                    self.activation,
+                    nn.Dropout(dropout_rate)
+                ])
+                prev_size = hidden_size
+
+            layers.append(nn.Linear(prev_size, 1))
+            self.network = nn.Sequential(*layers)
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            return self.network(x).squeeze(-1)
+
+
+class MLPWrapper:
+    """
+    Wrapper para modelo MLP compatível com sklearn API.
+
+    Encapsula o modelo PyTorch + scaler para uso transparente
+    com o pipeline de predição.
+    """
+
+    def __init__(self, model, scaler, feature_names, device=None):
+        self.model = model
+        self.scaler = scaler
+        self.feature_names_in_ = np.array(feature_names)
+        self.device = device or (torch.device('cuda' if torch.cuda.is_available() else 'cpu') if HAS_TORCH else None)
+        self._is_mlp = True
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        """Prediz valores normalizando automaticamente."""
+        self.model.eval()
+        X_scaled = self.scaler.transform(X)
+        X_tensor = torch.FloatTensor(X_scaled).to(self.device)
+        with torch.no_grad():
+            predictions = self.model(X_tensor).cpu().numpy()
+        return predictions
+
+
+# =============================================================================
+# FUNÇÕES AUXILIARES - MAPEAMENTO DE FEATURES
+# =============================================================================
+
+def get_model_features(model) -> List[str]:
+    """
+    Extrai a lista de features esperadas pelo modelo.
+
+    Parameters
+    ----------
+    model : object
+        Modelo treinado (sklearn ou similar).
+
+    Returns
+    -------
+    list
+        Lista de nomes das features na ordem esperada pelo modelo.
+
+    Raises
+    ------
+    ValueError
+        Se não for possível extrair as features do modelo.
+    """
+    if hasattr(model, 'feature_names_in_'):
+        return list(model.feature_names_in_)
+    elif hasattr(model, 'feature_names'):
+        return list(model.feature_names)
+    elif hasattr(model, 'n_features_in_'):
+        raise ValueError(
+            f"Modelo tem {model.n_features_in_} features mas não armazena os nomes. "
+            "Forneça feature_order manualmente."
+        )
+    else:
+        raise ValueError(
+            "Não foi possível extrair features do modelo. "
+            "Forneça feature_order manualmente."
+        )
+
+
+def normalize_feature_name(name: str) -> str:
+    """
+    Normaliza nome de feature para comparação.
+    Remove espaços extras, converte para minúsculas, substitui espaços por underscores.
+    """
+    return re.sub(r'\s+', '_', name.strip().lower())
+
+
+def build_reverse_mapping(features: List[str]) -> Dict[str, str]:
+    """
+    Constrói mapeamento reverso de padrões de arquivo para nomes de features.
+    """
+    mapping = {}
+    for feature in features:
+        normalized = normalize_feature_name(feature)
+        mapping[normalized] = feature
+        if normalized.startswith('elev_'):
+            mapping[normalized[5:]] = feature
+        match = re.match(r'elev[_\s]?p(\d+)', normalized)
+        if match:
+            p_num = match.group(1)
+            mapping[f'p{p_num}'] = feature
+            mapping[f'elev_p{p_num}'] = feature
+        if 'maximum' in normalized or 'max' in normalized:
+            mapping['max'] = feature
+            mapping['maximum'] = feature
+            mapping['elev_max'] = feature
+        if 'minimum' in normalized or 'min' in normalized:
+            mapping['min'] = feature
+            mapping['minimum'] = feature
+        if 'rotacao' in normalized or 'rotation' in normalized:
+            mapping['rotacao'] = feature
+            mapping['rotation'] = feature
+        if 'regional' in normalized:
+            mapping['regional'] = feature
+        if 'idade' in normalized or 'age' in normalized:
+            mapping['idade'] = feature
+            mapping['age'] = feature
+    return mapping
+
+
+def detect_feature_from_filename(filename: str, features: List[str]) -> Optional[str]:
+    """Detecta qual feature corresponde a um nome de arquivo."""
+    name = normalize_feature_name(Path(filename).stem)
+    mapping = build_reverse_mapping(features)
+    if name in mapping:
+        return mapping[name]
+    for pattern, feature in mapping.items():
+        if pattern in name or name in pattern:
+            return feature
+    for feature in features:
+        feat_normalized = normalize_feature_name(feature)
+        match = re.search(r'p(\d+)', feat_normalized)
+        if match:
+            p_num = match.group(1)
+            if re.search(rf'p{p_num}(?!\d)', name):
+                return feature
+    return None
+
+
+def auto_detect_rasters(
+    raster_dir: str,
+    features: List[str],
+    extensions: List[str] = ['.tif', '.tiff']
+) -> Dict[str, str]:
+    """Auto-detecta rasters em um diretório baseado nas features do modelo."""
+    raster_dir = Path(raster_dir)
+    if not raster_dir.exists():
+        raise FileNotFoundError(f"Diretório não encontrado: {raster_dir}")
+    raster_files = []
+    for ext in extensions:
+        raster_files.extend(raster_dir.glob(f'*{ext}'))
+        raster_files.extend(raster_dir.glob(f'*{ext.upper()}'))
+    raster_paths = {}
+    unmatched_files = []
+    for raster_file in raster_files:
+        feature = detect_feature_from_filename(raster_file.name, features)
+        if feature and feature not in raster_paths:
+            raster_paths[feature] = str(raster_file)
+        elif not feature:
+            unmatched_files.append(raster_file.name)
+    missing = [f for f in features if f not in raster_paths]
+    if missing:
+        print(f"\nFeatures não encontradas: {missing}")
+        print(f"Arquivos não mapeados: {unmatched_files}")
+        raise FileNotFoundError(
+            f"Não foi possível encontrar rasters para: {missing}\n"
+            f"Forneça manualmente usando --raster 'Feature Name=caminho.tif'"
+        )
+    return raster_paths
+
+
+# =============================================================================
+# FUNÇÕES AUXILIARES - MODELO E RASTER
 # =============================================================================
 
 def load_model(model_path: str):
     """
-    Carrega modelo Random Forest treinado.
+    Carrega modelo treinado (Random Forest .pkl ou MLP .pt).
 
     Parameters
     ----------
     model_path : str
-        Caminho do arquivo .pkl do modelo.
+        Caminho do arquivo .pkl (sklearn) ou .pt (PyTorch).
 
     Returns
     -------
-    sklearn.ensemble.RandomForestRegressor
-        Modelo carregado.
+    object
+        Modelo carregado (RandomForestRegressor ou MLPWrapper).
 
     Raises
     ------
     FileNotFoundError
         Se o arquivo não existir.
+    ImportError
+        Se tentar carregar .pt sem PyTorch instalado.
     """
     path = Path(model_path)
     if not path.exists():
         raise FileNotFoundError(f"Modelo não encontrado: {model_path}")
 
-    model = joblib.load(model_path)
-    print(f"Modelo carregado: {model_path}")
+    suffix = path.suffix.lower()
 
-    # Verifica se tem feature_names
-    if hasattr(model, 'feature_names_in_'):
-        print(f"  Features: {list(model.feature_names_in_)}")
-    elif hasattr(model, 'feature_names'):
-        print(f"  Features: {model.feature_names}")
+    # -------------------------------------------------------------------------
+    # Modelo PyTorch (.pt)
+    # -------------------------------------------------------------------------
+    if suffix == '.pt':
+        if not HAS_TORCH:
+            raise ImportError(
+                "PyTorch é necessário para carregar modelos .pt. "
+                "Execute: pip install torch"
+            )
 
-    if hasattr(model, 'n_estimators'):
-        print(f"  Árvores: {model.n_estimators}")
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        checkpoint = torch.load(model_path, map_location=device)
 
-    return model
+        # Extrai configuração do modelo
+        config = checkpoint['model_config']
+        feature_names = checkpoint['feature_names']
+        scaler = checkpoint['scaler']
+
+        # Reconstrói o modelo MLP
+        model = MLP(
+            input_size=config['input_size'],
+            hidden_sizes=config['hidden_sizes'],
+            dropout_rate=config['dropout_rate'],
+            activation=config['activation']
+        )
+        model.load_state_dict(checkpoint['model_state_dict'])
+        model.to(device)
+        model.eval()
+
+        # Cria wrapper compatível com sklearn API
+        wrapper = MLPWrapper(model, scaler, feature_names, device)
+
+        print(f"Modelo MLP carregado: {model_path}")
+        print(f"  Device: {device}")
+        print(f"  Features ({len(feature_names)}): {feature_names}")
+        print(f"  Arquitetura: {config['hidden_sizes']}")
+
+        return wrapper
+
+    # -------------------------------------------------------------------------
+    # Modelo sklearn (.pkl)
+    # -------------------------------------------------------------------------
+    else:
+        data = joblib.load(model_path)
+
+        # Handle dict format with model + feature_names
+        if isinstance(data, dict) and 'model' in data:
+            model = data['model']
+            if 'feature_names' in data:
+                model.feature_names = data['feature_names']
+            print(f"Modelo carregado (formato dict): {model_path}")
+        else:
+            model = data
+            print(f"Modelo carregado: {model_path}")
+
+        # Verifica se tem feature_names
+        try:
+            features = get_model_features(model)
+            print(f"  Features ({len(features)}): {features}")
+        except ValueError as e:
+            print(f"  Aviso: {e}")
+
+        if hasattr(model, 'n_estimators'):
+            print(f"  Árvores: {model.n_estimators}")
+
+        return model
 
 
 def get_raster_info(file_path: str) -> dict:
@@ -161,6 +391,7 @@ def get_raster_info(file_path: str) -> dict:
 def align_raster(
     source_path: str,
     reference_info: dict,
+    target_crs: Optional[CRS] = None,
     resampling_method: Resampling = Resampling.bilinear
 ) -> Tuple[np.ndarray, float]:
     """
@@ -172,6 +403,9 @@ def align_raster(
         Caminho do raster a ser alinhado.
     reference_info : dict
         Informações do raster de referência.
+    target_crs : CRS, optional
+        CRS alvo. Se fornecido, todos os rasters serao reprojetados para este CRS.
+        Se None, usa o CRS do raster de referência.
     resampling_method : Resampling
         Método de reamostragem.
 
@@ -184,12 +418,18 @@ def align_raster(
         band = src.read(1).astype('float32')
         nodata = src.nodata if src.nodata is not None else np.nan
 
+        # Determina CRS de destino
+        dst_crs = target_crs if target_crs is not None else reference_info['crs']
+
+        # Determina CRS de origem (se nao tiver, assume o CRS alvo)
+        src_crs = src.crs if src.crs is not None else dst_crs
+
         # Verifica se precisa reprojetar/alinhar
         needs_align = (
-            src.crs != reference_info['crs'] or
             src.transform != reference_info['transform'] or
             src.width != reference_info['width'] or
-            src.height != reference_info['height']
+            src.height != reference_info['height'] or
+            src_crs != dst_crs
         )
 
         if needs_align:
@@ -202,9 +442,9 @@ def align_raster(
                 source=band,
                 destination=aligned,
                 src_transform=src.transform,
-                src_crs=src.crs,
+                src_crs=src_crs,
                 dst_transform=reference_info['transform'],
-                dst_crs=reference_info['crs'],
+                dst_crs=dst_crs,
                 resampling=resampling_method
             )
             band = aligned
@@ -218,30 +458,47 @@ def predict_with_uncertainty(
     n_jobs: int = -1
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Faz predição com estimativa de incerteza usando todas as árvores do RF.
+    Faz predição com estimativa de incerteza.
+
+    Para Random Forest, calcula o desvio padrão entre as árvores.
+    Para MLP e outros modelos, retorna incerteza zero.
 
     Parameters
     ----------
-    model : RandomForestRegressor
-        Modelo treinado.
+    model : object
+        Modelo treinado (RandomForestRegressor, MLPWrapper, ou similar).
     X : np.ndarray
         Dados de entrada (n_samples, n_features).
     n_jobs : int
-        Número de jobs paralelos.
+        Número de jobs paralelos (apenas para RF).
 
     Returns
     -------
     tuple
         (média das predições, desvio padrão das predições)
-    """
-    # Predição por cada árvore
-    all_predictions = np.array([
-        tree.predict(X) for tree in model.estimators_
-    ])
 
-    # Média e desvio padrão
-    mean_pred = np.mean(all_predictions, axis=0)
-    std_pred = np.std(all_predictions, axis=0)
+    Notes
+    -----
+    - Random Forest: incerteza = std entre árvores
+    - MLP/outros: incerteza = 0 (não disponível)
+    """
+    # Verifica se é MLP (wrapper)
+    if hasattr(model, '_is_mlp') and model._is_mlp:
+        mean_pred = model.predict(X)
+        std_pred = np.zeros_like(mean_pred)
+
+    # Random Forest: usa estimators_ para calcular incerteza
+    elif hasattr(model, 'estimators_'):
+        all_predictions = np.array([
+            tree.predict(X) for tree in model.estimators_
+        ])
+        mean_pred = np.mean(all_predictions, axis=0)
+        std_pred = np.std(all_predictions, axis=0)
+
+    # Outros modelos sklearn
+    else:
+        mean_pred = model.predict(X)
+        std_pred = np.zeros_like(mean_pred)
 
     return mean_pred, std_pred
 
@@ -256,6 +513,7 @@ def predict_volume(
     output_dir: str,
     output_name: Optional[str] = None,
     feature_order: Optional[List[str]] = None,
+    target_crs: Optional[Union[str, int, CRS]] = None,
     nodata_output: float = -9999.0,
     compress: str = 'lzw',
     calculate_uncertainty: bool = True
@@ -284,6 +542,9 @@ def predict_volume(
         Nome base para os arquivos de saída. Se None, usa nome do diretório.
     feature_order : list, optional
         Ordem das features esperada pelo modelo.
+    target_crs : str, int or CRS, optional
+        CRS alvo para reprojetar todos os rasters. Pode ser EPSG code (int),
+        string (ex: 'EPSG:31983') ou objeto CRS. Se None, usa o CRS do primeiro raster.
     nodata_output : float
         Valor nodata para os rasters de saída.
     compress : str
@@ -326,15 +587,15 @@ def predict_volume(
 
     # Obtém ordem das features do modelo
     if feature_order is None:
-        if hasattr(model, 'feature_names_in_'):
-            feature_order = list(model.feature_names_in_)
-        elif hasattr(model, 'feature_names'):
-            feature_order = list(model.feature_names)
-        else:
-            feature_order = DEFAULT_FEATURE_ORDER
-            print(f"  Aviso: usando ordem de features padrão")
+        try:
+            feature_order = get_model_features(model)
+        except ValueError as e:
+            raise ValueError(
+                f"{e}\nForneça feature_order manualmente ou use um modelo "
+                "treinado com feature_names_in_"
+            )
 
-    print(f"  Features esperadas: {feature_order}")
+    print(f"  Features esperadas ({len(feature_order)}): {feature_order}")
 
     # -------------------------------------------------------------------------
     # 2. VALIDAÇÃO DAS ENTRADAS
@@ -358,9 +619,24 @@ def predict_volume(
     # -------------------------------------------------------------------------
     print(f"\n[3/5] Carregando e alinhando rasters...")
 
+    # Converte target_crs para objeto CRS se necessario
+    crs_obj = None
+    if target_crs is not None:
+        if isinstance(target_crs, CRS):
+            crs_obj = target_crs
+        elif isinstance(target_crs, int):
+            crs_obj = CRS.from_epsg(target_crs)
+        elif isinstance(target_crs, str):
+            crs_obj = CRS.from_string(target_crs)
+        print(f"  CRS alvo: {crs_obj}")
+
     # Primeiro raster como referência (usa a primeira feature na ordem)
     first_raster_path = raster_paths[feature_order[0]]
     ref_info = get_raster_info(first_raster_path)
+
+    # Se target_crs foi fornecido, atualiza o ref_info
+    if crs_obj is not None:
+        ref_info['crs'] = crs_obj
 
     print(f"  Referência: {Path(first_raster_path).name}")
     print(f"  Dimensões: {ref_info['width']} x {ref_info['height']}")
@@ -372,7 +648,7 @@ def predict_volume(
 
     for feature_name in feature_order:
         raster_path = raster_paths[feature_name]
-        band, nodata = align_raster(raster_path, ref_info)
+        band, nodata = align_raster(raster_path, ref_info, target_crs=crs_obj)
         feature_arrays.append(band)
         nodata_values.append(nodata)
         print(f"    {feature_name}: {Path(raster_path).name} "
@@ -407,7 +683,10 @@ def predict_volume(
     valid_data = flat_stack[valid_mask]
 
     # Predição com incerteza
-    print(f"  Predizendo com {model.n_estimators} árvores...")
+    if hasattr(model, 'n_estimators'):
+        print(f"  Predizendo com {model.n_estimators} árvores...")
+    else:
+        print(f"  Predizendo...")
     mean_pred, std_pred = predict_with_uncertainty(model, valid_data)
 
     # Reconstrói rasters
@@ -415,10 +694,12 @@ def predict_volume(
     predicted_full[valid_mask] = mean_pred.astype('float32')
     predicted_raster = predicted_full.reshape((height, width))
 
-    if calculate_uncertainty:
+    if calculate_uncertainty and np.any(std_pred > 0):
         uncertainty_full = np.full(n_pixels, nodata_output, dtype='float32')
         uncertainty_full[valid_mask] = std_pred.astype('float32')
         uncertainty_raster = uncertainty_full.reshape((height, width))
+    else:
+        calculate_uncertainty = False
 
     # Estatísticas
     valid_pred = predicted_raster[predicted_raster != nodata_output]
@@ -479,15 +760,67 @@ def predict_volume(
     return output_files
 
 
+def predict_volume_from_dir(
+    raster_dir: str,
+    model: Union[str, object],
+    output_dir: str,
+    output_name: Optional[str] = None,
+    **kwargs
+) -> Dict[str, str]:
+    """
+    Prediz volume auto-detectando rasters em um diretório.
+
+    Parameters
+    ----------
+    raster_dir : str
+        Diretório contendo os rasters.
+    model : str or object
+        Caminho do modelo (.pkl) ou modelo já carregado.
+    output_dir : str
+        Diretório para salvar os rasters de saída.
+    output_name : str, optional
+        Nome base para os arquivos de saída.
+    **kwargs
+        Argumentos adicionais para predict_volume.
+
+    Returns
+    -------
+    dict
+        Dicionário com caminhos dos arquivos gerados.
+    """
+    if isinstance(model, str):
+        model_obj = load_model(model)
+    else:
+        model_obj = model
+
+    features = get_model_features(model_obj)
+    print(f"\nAuto-detectando rasters em: {raster_dir}")
+    print(f"Features necessárias: {features}")
+
+    raster_paths = auto_detect_rasters(raster_dir, features)
+    print(f"\nRasters detectados:")
+    for feature, path in raster_paths.items():
+        print(f"  {feature}: {Path(path).name}")
+
+    return predict_volume(
+        raster_paths=raster_paths,
+        model=model_obj,
+        output_dir=output_dir,
+        output_name=output_name or Path(raster_dir).name,
+        **kwargs
+    )
+
+
 def predict_volume_batch(
     input_folders: List[str],
     model: Union[str, object],
     output_dir: str,
-    raster_pattern: Dict[str, str],
+    raster_pattern: Optional[Dict[str, str]] = None,
+    auto_detect: bool = True,
     **kwargs
 ) -> List[Dict[str, str]]:
     """
-    Processa múltiplos talhões em lote.
+    Processa múltiplos talhões em lote com auto-detecção de features.
 
     Parameters
     ----------
@@ -497,17 +830,10 @@ def predict_volume_batch(
         Modelo ou caminho do modelo.
     output_dir : str
         Diretório de saída.
-    raster_pattern : dict
-        Mapeamento de variável para padrão glob de nome de arquivo.
-        Exemplo:
-            {
-                'Elev P90': '*p90*.tif',
-                'Elev P60': '*p60*.tif',
-                'Elev maximum': '*max*.tif',
-                'ROTACAO': '*rotacao*.tif',
-                'REGIONAL': '*regional*.tif',
-                'Idade (meses)': '*idade*.tif'
-            }
+    raster_pattern : dict, optional
+        Mapeamento de variável para padrão glob. Se None, usa auto-detecção.
+    auto_detect : bool
+        Se True, usa auto-detecção de rasters baseada nas features do modelo.
     **kwargs
         Argumentos adicionais para predict_volume.
 
@@ -515,26 +841,14 @@ def predict_volume_batch(
     -------
     list
         Lista de dicionários com arquivos gerados por talhão.
-
-    Examples
-    --------
-    predict_volume_batch(
-        input_folders=['talhao_01/', 'talhao_02/', 'talhao_03/'],
-        model='model.pkl',
-        output_dir='resultados/',
-        raster_pattern={
-            'Elev P90': '*p90*.tif',
-            'Elev P60': '*p60*.tif',
-            'Elev maximum': '*max*.tif',
-            'ROTACAO': '*rotacao*.tif',
-            'REGIONAL': '*regional*.tif',
-            'Idade (meses)': '*idade*.tif'
-        }
-    )
     """
-    # Carrega modelo uma vez
     if isinstance(model, str):
         model = load_model(model)
+
+    if auto_detect and raster_pattern is None:
+        features = get_model_features(model)
+        print(f"\nModo auto-detecção ativado")
+        print(f"Features do modelo: {features}")
 
     results = []
 
@@ -544,22 +858,22 @@ def predict_volume_batch(
         print(f"TALHÃO {i}/{len(input_folders)}: {folder_path.name}")
         print('='*70)
 
-        # Monta dicionário de rasters para este talhão
-        raster_paths = {}
-        missing_vars = []
-
-        for var_name, pattern in raster_pattern.items():
-            matches = list(folder_path.glob(pattern))
-            if matches:
-                raster_paths[var_name] = str(matches[0])
-            else:
-                missing_vars.append(var_name)
-
-        if missing_vars:
-            print(f"  Erro: rasters não encontrados para: {missing_vars}")
-            continue
-
         try:
+            if auto_detect and raster_pattern is None:
+                raster_paths = auto_detect_rasters(str(folder_path), features)
+            else:
+                raster_paths = {}
+                missing_vars = []
+                for var_name, pattern in raster_pattern.items():
+                    matches = list(folder_path.glob(pattern))
+                    if matches:
+                        raster_paths[var_name] = str(matches[0])
+                    else:
+                        missing_vars.append(var_name)
+                if missing_vars:
+                    print(f"  Erro: rasters não encontrados para: {missing_vars}")
+                    continue
+
             result = predict_volume(
                 raster_paths=raster_paths,
                 model=model,
@@ -576,54 +890,106 @@ def predict_volume_batch(
 
 
 # =============================================================================
-# EXECUÇÃO
+# EXECUÇÃO CLI
 # =============================================================================
 
 if __name__ == '__main__':
     import argparse
+    import sys
 
     parser = argparse.ArgumentParser(
         description='Predição de volume florestal a partir de rasters LiDAR',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Exemplo:
+Exemplos:
+
+  # Auto-detecção de rasters em um diretório
+  python PredictVolume.py --model model.pkl --raster-dir metricas/ --output resultados/
+
+  # Especificando rasters manualmente
   python PredictVolume.py --model model.pkl --output resultados/ \\
-      --p90 metricas/p90.tif --p60 metricas/p60.tif --max metricas/max.tif \\
-      --rotacao metricas/rotacao.tif --regional metricas/regional.tif \\
-      --idade metricas/idade.tif
+      --raster "Elev P90=metricas/p90.tif" \\
+      --raster "Elev P60=metricas/p60.tif" \\
+      --raster "Elev maximum=metricas/max.tif"
+
+  # Listar features do modelo
+  python PredictVolume.py --model model.pkl --list-features
+
+  # Processamento em lote
+  python PredictVolume.py --model model.pkl --output resultados/ \\
+      --batch talhao_01/ talhao_02/ talhao_03/
         """
     )
+
     parser.add_argument('--model', required=True, help='Caminho do modelo .pkl')
-    parser.add_argument('--output', required=True, help='Diretório de saída')
-    parser.add_argument('--p90', required=True, help='Raster de Elev P90')
-    parser.add_argument('--p60', required=True, help='Raster de Elev P60')
-    parser.add_argument('--max', required=True, help='Raster de Elev maximum')
-    parser.add_argument('--rotacao', required=True,
-                        help='Raster de ROTACAO (.tif)')
-    parser.add_argument('--regional', required=True,
-                        help='Raster de REGIONAL (.tif)')
-    parser.add_argument('--idade', required=True,
-                        help='Raster de Idade em meses (.tif)')
+    parser.add_argument('--output', help='Diretório de saída')
+    parser.add_argument('--raster-dir', help='Diretório com rasters (auto-detecção)')
+    parser.add_argument('--raster', action='append', metavar='FEATURE=PATH',
+                        help='Raster no formato "Nome Feature=caminho.tif" (repetível)')
+    parser.add_argument('--batch', nargs='+', metavar='DIR',
+                        help='Processar múltiplos diretórios em lote')
     parser.add_argument('--name', help='Nome base para os arquivos de saída')
     parser.add_argument('--no-uncertainty', action='store_true',
                         help='Não calcular raster de incerteza')
+    parser.add_argument('--list-features', action='store_true',
+                        help='Listar features do modelo e sair')
 
     args = parser.parse_args()
 
-    # Monta dicionário de rasters
-    raster_paths = {
-        'Elev P90': args.p90,
-        'Elev P60': args.p60,
-        'Elev maximum': args.max,
-        'ROTACAO': args.rotacao,
-        'REGIONAL': args.regional,
-        'Idade (meses)': args.idade
-    }
+    # Modo: listar features
+    if args.list_features:
+        model = load_model(args.model)
+        try:
+            features = get_model_features(model)
+            print(f"\nFeatures do modelo ({len(features)}):")
+            for i, f in enumerate(features, 1):
+                print(f"  {i}. {f}")
+        except ValueError as e:
+            print(f"\nErro: {e}")
+        sys.exit(0)
 
-    predict_volume(
-        raster_paths=raster_paths,
-        model=args.model,
-        output_dir=args.output,
-        output_name=args.name,
-        calculate_uncertainty=not args.no_uncertainty
-    )
+    # Validação de argumentos
+    if not args.output:
+        parser.error("--output é obrigatório para predição")
+
+    if not args.raster_dir and not args.raster and not args.batch:
+        parser.error("Forneça --raster-dir, --raster ou --batch")
+
+    # Modo: processamento em lote
+    if args.batch:
+        predict_volume_batch(
+            input_folders=args.batch,
+            model=args.model,
+            output_dir=args.output,
+            auto_detect=True,
+            calculate_uncertainty=not args.no_uncertainty
+        )
+        sys.exit(0)
+
+    # Modo: auto-detecção em diretório
+    if args.raster_dir:
+        predict_volume_from_dir(
+            raster_dir=args.raster_dir,
+            model=args.model,
+            output_dir=args.output,
+            output_name=args.name,
+            calculate_uncertainty=not args.no_uncertainty
+        )
+        sys.exit(0)
+
+    # Modo: rasters especificados manualmente
+    if args.raster:
+        raster_paths = {}
+        for r in args.raster:
+            if '=' not in r:
+                parser.error(f"Formato inválido: '{r}'. Use 'Feature=caminho.tif'")
+            feature, path = r.split('=', 1)
+            raster_paths[feature.strip()] = path.strip()
+
+        predict_volume(
+            raster_paths=raster_paths,
+            model=args.model,
+            output_dir=args.output,
+            output_name=args.name,
+            calculate_uncertainty=not args.no_uncertainty
+        )

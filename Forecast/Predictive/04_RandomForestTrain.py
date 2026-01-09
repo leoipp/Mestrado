@@ -16,7 +16,7 @@ Workflow:
 Variáveis selecionadas (saída do 02_VariablesCorrelation.py / 03_FeatureSelection.py)
 
 Saídas:
-    - Models/RF_Regressor.pkl: Modelo treinado serializado
+    - Models/RF_Regressor_MAX_CUB_STD.pkl: Modelo treinado serializado
     - Results/RF_Training_Metrics.xlsx: Métricas de validação cruzada
     - Results/RF_Feature_Importance.png: Gráfico de importância das variáveis
     - Results/RF_Diagnostics.png: Gráficos diagnósticos (Obs vs Pred, Resíduos)
@@ -50,8 +50,7 @@ MODEL_DIR = Path(r"G:\PycharmProjects\Mestrado\Forecast\Predictive\Models")
 # Variáveis do modelo (definidas na etapa de seleção de features)
 FEATURE_NAMES = [
     'Elev P90',        # Percentil 90 - estrutura dominante
-    'Elev P60',        # Percentil 60 - estrutura média do dossel
-    'Elev maximum',    # Altura máxima - árvores emergentes
+    'Elev CURT mean CUBE',        # Percentil 60 - estrutura média do dossel
     'ROTACAO',         # Rotação florestal
     'REGIONAL',        # Regional
     'Idade (meses)'    # Idade do plantio
@@ -72,7 +71,7 @@ FORCE_OHE_COLUMNS = [] # Colunas a forçar OHE mesmo se numéricas
 # Feature Engineering (Interações)
 CREATE_INTERACTIONS = True  # Se True, cria variáveis de interação
 # Quais variáveis (após OHE) você quer multiplicar (ex.: LiDAR contínuas)
-INTERACTION_BASE_FEATURES = ['Elev P90', 'Elev P60', 'Elev maximum']
+INTERACTION_BASE_FEATURES = ['Elev P90', 'Elev CURT mean CUBE']
 # Prefixos/colunas que serão tratadas como "indicadores" (ex.: OHE de REGIONAL/ROTACAO)
 # Você pode colocar prefixos, e o código pega todas as colunas que começam com isso.
 INTERACTION_INDICATOR_PREFIXES = ['REGIONAL_', 'ROTACAO_', 'Idade (meses)']
@@ -595,7 +594,7 @@ def train_random_forest(
     print("[7/7] Exportando resultados...")
 
     if save_model:
-        model_path = MODEL_DIR / 'RF_Regressor.pkl'
+        model_path = MODEL_DIR / 'RF_Regressor_P90_CUB.pkl'
         joblib.dump(rf_optimized, model_path)
         print(f"  Modelo salvo: {model_path}")
 

@@ -121,7 +121,7 @@ Ambos os modelos geram:
 O script `PredictVolume.py` aplica o modelo treinado em rasters para gerar mapas continuos de volume:
 
 ```bash
-python PredictVolume.py --model RF_Regressor.pkl --output resultados/ \
+python PredictVolume.py --model RF_Regressor_MAX_CUB_STD.pkl --output resultados/ \
     --p90 p90.tif --p60 p60.tif --max max.tif \
     --rotacao rotacao.tif --regional regional.tif --idade idade.tif
 ```
@@ -213,7 +213,7 @@ predict_volume(
         'REGIONAL': 'cadastro/regional.tif',
         'Idade (meses)': 'cadastro/idade.tif'
     },
-    model='Models/RF_Regressor.pkl',
+    model='Models/RF_Regressor_MAX_CUB_STD.pkl',
     output_dir='resultados/'
 )
 ```

@@ -280,9 +280,22 @@ def generate_interaction_rasters(
         indicator_data = indicator_cache[ind_name]
 
         for base_name, base_path in base_rasters.items():
-            # Carrega base (com cache)
+            # Carrega base (com cache e reamostragem se necessário)
             if base_name not in base_cache:
-                base_cache[base_name], _ = load_raster(base_path)
+                base_data, _ = load_raster(base_path)
+
+                # Verifica se precisa reamostrar para a grade de referência
+                if base_data.shape != ref_shape:
+                    if verbose:
+                        print(f"  Reamostrando BASE {base_name}: {base_data.shape} -> {ref_shape}")
+                    base_data, _ = resample_to_reference(
+                        source_path=base_path,
+                        reference_path=first_base_path,
+                        resampling_method='bilinear',  # bilinear para contínuos (P90/P60/Elev)
+                        nodata=nodata
+                    )
+
+                base_cache[base_name] = base_data
 
             base_data = base_cache[base_name]
 

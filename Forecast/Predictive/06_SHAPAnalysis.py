@@ -55,7 +55,7 @@ warnings.filterwarnings('ignore')
 
 # Caminhos
 INPUT_FILE = r"G:\PycharmProjects\Mestrado\Data\DataFrames\IFC_LiDAR_Plots_RTK_Cleaned_v02.xlsx"
-MODEL_FILE = r"G:\PycharmProjects\Mestrado\Forecast\Predictive\Models\RF_Regressor.pkl"
+MODEL_FILE = r"/Forecast/Predictive/Models/RF_Regressor.pkl"
 OUTPUT_DIR = Path(r"G:\PycharmProjects\Mestrado\Forecast\Predictive\Results")
 
 # Variáveis (devem corresponder às usadas no treinamento)

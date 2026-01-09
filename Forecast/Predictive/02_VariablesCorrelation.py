@@ -29,7 +29,7 @@ import seaborn as sns
 from sklearn.feature_selection import RFE
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-from sklearn.model_selection import KFold, GridSearchCV
+from sklearn.model_selection import KFold, GridSearchCV, cross_val_predict
 from statsmodels.stats.outliers_influence import variance_inflation_factor
 
 # =============================================================================
@@ -117,11 +117,6 @@ print(f"\nVariáveis selecionadas (|r| > {CORRELATION_THRESHOLD}, apenas LiDAR):
 print(f"  {len(correlations_filtered)} variáveis de {len(correlations)} totais")
 print(correlations_filtered)
 
-# Salva matriz de correlação (Pearson) das variáveis selecionadas
-CORR_OUTPUT_FILE = ".\\Results\\Pearson_Correlation_Selected.xlsx"
-correlations_filtered.to_excel(CORR_OUTPUT_FILE)
-print(f"✓ Matriz de correlação Pearson salva em: {CORR_OUTPUT_FILE}")
-
 # Salva correlação VTCC x variáveis
 VTCC_CORR_FILE = ".\\Results\\Pearson_VTCC_Correlation.xlsx"
 correlations.to_frame(name="Pearson_r").to_excel(VTCC_CORR_FILE)
@@ -165,6 +160,21 @@ model_cv = GridSearchCV(
 print("\nExecutando RFE com validação cruzada...")
 model_cv.fit(X, Y)
 
+# =============================================================================
+# VARIÁVEIS FINAIS: APENAS RFE RANKING = 1 (support = True)
+# =============================================================================
+selected_features_rfe = list(np.array(feature_cols)[model_cv.best_estimator_.support_])
+
+print("\nVariáveis finais (RFE ranking = 1):")
+for v in selected_features_rfe:
+    print(f"  - {v}")
+
+# Salva lista das variáveis finais
+RFE_SELECTED_FILE = ".\\Results\\RFE_Selected_Features.xlsx"
+pd.DataFrame({"Feature": selected_features_rfe}).to_excel(RFE_SELECTED_FILE, index=False)
+print(f"✓ Lista de variáveis RFE (ranking=1) salva em: {RFE_SELECTED_FILE}")
+
+
 #%% Ranking das features
 print("\n" + "-" * 40)
 print("RANKING DAS FEATURES")
@@ -194,6 +204,9 @@ bias_list = []
 r2_list = []
 
 # Itera sobre cada configuração de número de features
+# Usa cross_val_predict para evitar viés otimista (overfitting)
+cv_eval = KFold(n_splits=CV_FOLDS, shuffle=True, random_state=RANDOM_STATE)
+
 for n in results_df['param_n_features_to_select']:
     rfe_temp = RFE(
         estimator=RandomForestRegressor(random_state=RANDOM_STATE),
@@ -201,19 +214,20 @@ for n in results_df['param_n_features_to_select']:
     )
     rfe_temp.fit(X, Y)
 
-    # Seleciona features e faz predições
+    # Seleciona features
     X_sel = rfe_temp.transform(X)
-    y_pred = rfe_temp.estimator_.predict(X_sel)
-
-    # Armazena features selecionadas
     selected = np.array(feature_cols)[rfe_temp.support_].tolist()
     features_selected_list.append(selected)
 
-    # Calcula métricas de avaliação
-    rmse_list.append(np.sqrt(mean_squared_error(Y, y_pred)))
-    mae_list.append(mean_absolute_error(Y, y_pred))
-    bias_list.append(np.mean(y_pred - Y))
-    r2_list.append(r2_score(Y, y_pred))
+    # Predições via validação cruzada (out-of-sample)
+    rf_model = RandomForestRegressor(random_state=RANDOM_STATE)
+    y_pred_cv = cross_val_predict(rf_model, X_sel, Y, cv=cv_eval)
+
+    # Calcula métricas de avaliação (validação cruzada)
+    rmse_list.append(np.sqrt(mean_squared_error(Y, y_pred_cv)))
+    mae_list.append(mean_absolute_error(Y, y_pred_cv))
+    bias_list.append(np.mean(y_pred_cv - Y))
+    r2_list.append(r2_score(Y, y_pred_cv))
 
 # Adiciona métricas ao DataFrame
 results_df['features_selected'] = features_selected_list
@@ -268,7 +282,8 @@ corr_matrix = df[selected_cols].corr()
 # =============================================================================
 # HEATMAP TRIANGULAR (SEM REPETIÇÃO)
 # =============================================================================
-FIG_CORR_HEATMAP = ".\\Results\\Heatmap_Correlation_Selected.png"
+
+FIG_CORR_HEATMAP = ".\\Results\\Heatmap_Correlation_RFE_Rank1.png"
 
 plt.figure(figsize=(14, 12))
 
@@ -295,3 +310,157 @@ plt.savefig(FIG_CORR_HEATMAP, dpi=300, bbox_inches="tight")
 plt.show()
 
 print(f"✓ Heatmap de correlação salvo em: {FIG_CORR_HEATMAP}")
+
+
+# =============================================================================
+# HEATMAP: APENAS VARIÁVEIS COM |r| > 0.6 + VTCC  + COLCHETE (SELECTED METRICS)
+# =============================================================================
+print("\nGerando heatmap com Pearson |r| > 0.6 + VTCC")
+
+from matplotlib.patches import FancyArrowPatch
+
+def add_vertical_bracket(ax, y0, y1, text, x=-0.9, text_x=-1.35,
+                         lw=1.4, fontsize=10):
+    """
+    Desenha um colchete vertical no lado esquerdo do heatmap, cobrindo de y0 até y1.
+    Coordenadas (x, y) no sistema de dados do heatmap (0..n).
+    """
+    y0, y1 = sorted([y0, y1])
+
+    bracket = FancyArrowPatch(
+        (x, y0), (x, y1),
+        arrowstyle='-[',          # colchete
+        mutation_scale=18,
+        lw=lw,
+        color='black',
+        clip_on=False
+    )
+    ax.add_patch(bracket)
+
+    ax.text(
+        text_x, (y0 + y1) / 2,
+        text,
+        va='center', ha='right',
+        fontsize=fontsize,
+        color='black',
+        clip_on=False
+    )
+
+# =============================================================================
+# SELEÇÃO FINAL PARA HEATMAP:
+# Apenas variáveis LiDAR (Elev*) + VTCC
+# =============================================================================
+# =============================================================================
+# HEATMAP: apenas Elev* com |r(VTCC)| > threshold + VTCC
+# =============================================================================
+print("\nGerando heatmap: Elev* com |r(VTCC)| > threshold + VTCC")
+
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+
+# 1) Apenas Elev* dentro do vetor de correlações com VTCC
+elev_corr = correlations[correlations.index.str.startswith("Elev")]
+
+# 2) Aplica limiar |r| > threshold
+elev_strong = elev_corr[abs(elev_corr) > CORRELATION_THRESHOLD] \
+    .sort_values(key=np.abs, ascending=False)
+
+# 3) Lista final: VTCC + Elev selecionadas
+vars_heatmap = [TARGET_COLUMN] + elev_strong.index.tolist()
+
+print(f"Variáveis no heatmap: {len(vars_heatmap)}")
+for v in vars_heatmap:
+    print(f"  - {v}")
+
+# 4) Matriz de correlação (Pearson) + máscara triangular
+corr_matrix = df[vars_heatmap].corr(method="pearson")
+mask = np.triu(np.ones_like(corr_matrix, dtype=bool))
+
+# 5) Figura com tamanho dinâmico
+n_vars = len(vars_heatmap)
+figsize = max(8, n_vars * 0.55)
+
+FIG_CORR_HEATMAP = ".\\Results\\Heatmap_Correlation_Elev_gt_06_plus_VTCC.png"
+
+plt.figure(figsize=(figsize, figsize), dpi=300)
+ax = plt.gca()
+
+# cria o divider vinculado ao eixo principal
+divider = make_axes_locatable(ax)
+
+# colorbar à ESQUERDA com a MESMA ALTURA do heatmap
+cax = divider.append_axes(
+    "left",
+    size="3.5%",   # largura da barra
+    pad=0.15       # distância do heatmap
+)
+
+# HEATMAP
+sns.heatmap(
+    corr_matrix,
+    mask=mask,
+    cmap="YlGnBu",
+    annot=True,
+    fmt=".2f",
+    square=True,
+    linewidths=0.3,
+    annot_kws={"size": 8 if n_vars <= 18 else 7},
+    cbar=True,
+    cbar_ax=cax,   # controla posição/tamanho da barra
+    ax=ax
+)
+
+# colorbar: ticks do lado esquerdo (como está à esquerda)
+cax.yaxis.set_ticks_position("left")
+cax.yaxis.set_label_position("left")
+
+# =========================
+# AJUSTES DE EIXOS (LIMPEZA)
+# =========================
+
+# X: embaixo, diagonal padrão (remove último label da ponta)
+ax.tick_params(axis="x", bottom=True, top=False, labelbottom=True, labeltop=False)
+xt = ax.get_xticks()
+xl = [t.get_text().replace("Elev", "Z") for t in ax.get_xticklabels()]
+if len(xl) > 1:
+    ax.set_xticks(xt[:-1])
+    ax.set_xticklabels(xl[:-1], rotation=45, ha="right")
+
+# Y: remove yticks padrão e coloca labels na diagonal do heatmap
+ax.set_yticks([])
+ax.set_yticklabels([])
+
+# Adiciona labels na diagonal (posição i,i com offset para a direita)
+for i, var in enumerate(vars_heatmap[1:], start=1):  # pula o primeiro (VTCC)
+    ax.text(
+        i + 0.1,          # x: na diagonal, com pequeno offset para direita
+        i + 0.5,          # y: centro da célula
+        var.replace("Elev", "Z"),
+        ha="left",
+        va="center",
+        fontsize=8 if n_vars <= 18 else 7,
+        clip_on=False
+    )
+
+# remove spines desnecessários
+for spine in ["top", "right"]:
+    ax.spines[spine].set_visible(False)
+
+# layout final
+plt.subplots_adjust(
+    left=0.32,
+    right=0.88,
+    bottom=0.22,
+    top=0.98
+)
+
+# salva figura
+plt.savefig(
+    FIG_CORR_HEATMAP,
+    dpi=300,
+    bbox_inches="tight",
+    pad_inches=0.25
+)
+plt.show()
+
+print(f"✓ Heatmap salvo em: {FIG_CORR_HEATMAP}")
+

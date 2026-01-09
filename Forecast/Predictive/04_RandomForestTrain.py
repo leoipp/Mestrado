@@ -51,6 +51,7 @@ MODEL_DIR = Path(r"G:\PycharmProjects\Mestrado\Forecast\Predictive\Models")
 FEATURE_NAMES = [
     'Elev P90',        # Percentil 90 - estrutura dominante
     'Elev CURT mean CUBE',        # Percentil 60 - estrutura média do dossel
+    'Elev stddev',
     'ROTACAO',         # Rotação florestal
     'REGIONAL',        # Regional
     'Idade (meses)'    # Idade do plantio

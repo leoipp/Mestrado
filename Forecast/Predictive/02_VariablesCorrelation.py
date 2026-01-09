@@ -253,21 +253,28 @@ print(f"\nVariáveis no heatmap: {len(selected_cols)}")
 # Calcula matriz de correlação
 corr_matrix = df[selected_cols].corr()
 
-# Cria heatmap triangular inferior
+# =============================================================================
+# HEATMAP TRIANGULAR (SEM REPETIÇÃO)
+# =============================================================================
+
 plt.figure(figsize=(14, 12))
-mask = np.triu(np.ones_like(corr_matrix, dtype=bool), k=1)
+
+# Máscara para esconder o triângulo superior (inclui diagonal se quiser)
+mask = np.triu(np.ones_like(corr_matrix, dtype=bool))
 
 sns.heatmap(
     corr_matrix,
+    mask=mask,
     cmap="YlGnBu",
     annot=True,
     fmt=".2f",
-    mask=mask,
     square=True,
-    cbar_kws={"orientation": "horizontal", "shrink": 0.7},
-    linewidth=0.2
+    linewidths=0.3,
+    cbar_kws={"orientation": "horizontal", "shrink": 0.7}
 )
 
 plt.xticks(rotation=45, ha='right')
+plt.yticks(rotation=0)
+plt.title("Matriz de Correlação (Triângulo Inferior)")
 plt.tight_layout()
 plt.show()

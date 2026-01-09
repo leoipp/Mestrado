@@ -22,7 +22,6 @@ Projeto: Mestrado - Predição de Volume Florestal com LiDAR
 
 import numpy as np
 import pandas as pd
-import seaborn as sns
 import matplotlib.pyplot as plt
 from scipy import stats
 
@@ -310,9 +309,12 @@ print("VALIDAÇÃO DE MÉTRICAS LIDAR")
 print("=" * 60)
 
 lidar_inconsistencies = df[
-    (df['Elev P90'] <= 0) |
+    (df['Elev P90'] <= 10) |
     (df['Elev variance'] < 0) |
+    (df['Elev stddev'] <= 6) |
+    ((df['Elev stddev'] <= 8) & (df['VTCC(m³/ha)'] > 300)) |
     (df['Elev CURT mean CUBE'] < 0) |
+    (df['Elev CURT mean CUBE'] > 30) |
     (df['Elev maximum'] > MAX_TREE_HEIGHT)
 ]
 

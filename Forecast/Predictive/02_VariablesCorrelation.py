@@ -116,6 +116,18 @@ correlations_filtered = correlations_filtered[correlations_filtered.index.str.co
 print(f"\nVariáveis selecionadas (|r| > {CORRELATION_THRESHOLD}, apenas LiDAR):")
 print(f"  {len(correlations_filtered)} variáveis de {len(correlations)} totais")
 print(correlations_filtered)
+
+# Salva matriz de correlação (Pearson) das variáveis selecionadas
+CORR_OUTPUT_FILE = ".\\Results\\Pearson_Correlation_Selected.xlsx"
+correlations_filtered.to_excel(CORR_OUTPUT_FILE)
+print(f"✓ Matriz de correlação Pearson salva em: {CORR_OUTPUT_FILE}")
+
+# Salva correlação VTCC x variáveis
+VTCC_CORR_FILE = ".\\Results\\Pearson_VTCC_Correlation.xlsx"
+correlations.to_frame(name="Pearson_r").to_excel(VTCC_CORR_FILE)
+print(f"✓ Correlação VTCC salva em: {VTCC_CORR_FILE}")
+
+
 # =============================================================================
 # SELEÇÃO RECURSIVA DE FEATURES (RFE)
 # =============================================================================
@@ -256,13 +268,13 @@ corr_matrix = df[selected_cols].corr()
 # =============================================================================
 # HEATMAP TRIANGULAR (SEM REPETIÇÃO)
 # =============================================================================
+FIG_CORR_HEATMAP = ".\\Results\\Heatmap_Correlation_Selected.png"
 
 plt.figure(figsize=(14, 12))
 
-# Máscara para esconder o triângulo superior (inclui diagonal se quiser)
 mask = np.triu(np.ones_like(corr_matrix, dtype=bool))
 
-sns.heatmap(
+ax = sns.heatmap(
     corr_matrix,
     mask=mask,
     cmap="YlGnBu",
@@ -275,6 +287,11 @@ sns.heatmap(
 
 plt.xticks(rotation=45, ha='right')
 plt.yticks(rotation=0)
-plt.title("Matriz de Correlação (Triângulo Inferior)")
+plt.title("Matriz de Correlação de Pearson (Triângulo Inferior)")
 plt.tight_layout()
+
+# Salva figura
+plt.savefig(FIG_CORR_HEATMAP, dpi=300, bbox_inches="tight")
 plt.show()
+
+print(f"✓ Heatmap de correlação salvo em: {FIG_CORR_HEATMAP}")

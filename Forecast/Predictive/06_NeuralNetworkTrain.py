@@ -1,5 +1,5 @@
 """
-05_NeuralNetworkTrain.py - Treinamento de Rede Neural MLP para Predicao de Volume
+06_NeuralNetworkTrain.py - Treinamento de Rede Neural MLP para Predicao de Volume
 
 Este script treina um modelo MLP (Multi-Layer Perceptron) para predicao de
 volume florestal (VTCC) utilizando metricas LiDAR e variaveis auxiliares.

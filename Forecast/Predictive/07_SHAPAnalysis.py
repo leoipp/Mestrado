@@ -1,5 +1,5 @@
 """
-06_SHAPAnalysis.py - Análise SHAP para Interpretabilidade do Modelo
+07_SHAPAnalysis.py - Análise SHAP para Interpretabilidade do Modelo
 
 Este script realiza uma análise crítica do modelo Random Forest utilizando
 SHAP (SHapley Additive exPlanations) para interpretabilidade e explicabilidade.
@@ -55,14 +55,14 @@ warnings.filterwarnings('ignore')
 
 # Caminhos
 INPUT_FILE = r"G:\PycharmProjects\Mestrado\Data\DataFrames\IFC_LiDAR_Plots_RTK_Cleaned_v02.xlsx"
-MODEL_FILE = r"/Forecast/Predictive/Models/RF_Regressor.pkl"
+MODEL_FILE = r"G:\PycharmProjects\Mestrado\Forecast\Predictive\Models\RF_Regressor_P90_CUB.pkl"
 OUTPUT_DIR = Path(r"G:\PycharmProjects\Mestrado\Forecast\Predictive\Results")
 
 # Variáveis (devem corresponder às usadas no treinamento)
 FEATURE_NAMES = [
     'Elev P90',
-    'Elev P60',
-    'Elev maximum',
+    'Elev CURT mean CUBE',        # Percentil 60 - estrutura média do dossel
+    'Elev stddev',
     'ROTACAO',
     'REGIONAL',
     'Idade (meses)'

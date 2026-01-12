@@ -49,32 +49,36 @@ warnings.filterwarnings('ignore')
 
 # Caminhos dos arquivos
 INPUT_FILE = r"G:\PycharmProjects\Mestrado\Data\DataFrames\IFC_LiDAR_Plots_RTK_Cleaned_v02.xlsx"
-OUTPUT_FILE = "../../Data/DataFrames/RandomForest_Comb_Results_CV_KFold10_TuningCV10_RMSE_NEW.xlsx"
+OUTPUT_FILE = "../../Data/DataFrames/RandomForest_Comb_Results_CV_KFold10_TuningCV10_RMSE_2026.xlsx"
 CHECKPOINT_FILE = "../../Data/DataFrames/RandomForest_Checkpoint.pkl"
 
 # Variável alvo
 TARGET_COLUMN = 'VTCC(m³/ha)'
 
 # Parâmetros de validação cruzada
-CV_FOLDS = 10                    # Número de folds para avaliação e tuning
+CV_FOLDS = 5                    # Número de folds para avaliação e tuning
 RANDOM_STATE = 42                # Semente para reprodutibilidade
-N_ITER_SEARCH = 100              # Iterações do RandomizedSearchCV (reduzido de 500)
+N_ITER_SEARCH = 20              # Iterações do RandomizedSearchCV (reduzido de 500)
 
 # Parâmetros de paralelização
 N_JOBS_OUTER = -1                # Número de jobs para loop principal (-1 = todos os cores)
 N_JOBS_INNER = 1                 # Jobs internos (1 quando outer é paralelo)
-CHECKPOINT_INTERVAL = 100        # Salvar checkpoint a cada N combinações
+CHECKPOINT_INTERVAL = 500        # Salvar checkpoint a cada N combinações
 TOP_N_PLOTS = 10                 # Gerar gráficos apenas para top N resultados
+
+# Parâmetros de One-Hot Encoding
+APPLY_ONE_HOT = True             # True = aplica OHE em variáveis categóricas
+DROP_FIRST_OHE = False           # True se quiser evitar colinearidade (não necessário em RF)
+FORCE_OHE_COLUMNS = []           # Colunas a forçar OHE mesmo se numéricas
+
+# Limite de features por combinação
+MAX_FEATURES = 6                 # Máximo de features por combinação (None = sem limite)
 
 # Features candidatas (LiDAR + variáveis de inventário)
 FEATURE_NAMES = [
-    # Métricas LiDAR de altura (percentis)
-    'Elev P90', 'Elev P80', 'Elev P95', 'Elev P99', 'Elev P75', 'Elev P70', 'Elev P60',
-    # Métricas LiDAR derivadas
-    'Elev CURT mean CUBE', 'Elev maximum', 'Elev SQRT mean SQ',
-    'Elev variance', 'Elev L1', 'Elev stddev',
-    # Variáveis de inventário
-    'ROTACAO', 'REGIONAL', 'Idade (meses)'
+    'Elev P90', 'Elev P80', 'Elev P95', 'Elev P99', 'Elev P75', 'Elev CURT mean CUBE',
+    'Elev maximum', 'Elev P70', 'Elev SQRT mean SQ', 'Elev stddev', 'Elev P60', 'Elev L2',
+    'Regime', 'REGIONAL', 'Idade (meses)'
 ]
 
 # Configuração de estilo dos gráficos
@@ -106,11 +110,54 @@ HYPERPARAM_GRID = {
 
 
 # =============================================================================
+# FUNÇÃO PARA APLICAR ONE-HOT ENCODING
+# =============================================================================
+
+def apply_one_hot_encoding(df, feature_names, drop_first=False, force_ohe_columns=None):
+    """
+    Aplica One-Hot Encoding em variáveis categóricas.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame com os dados.
+    feature_names : list
+        Lista de nomes das features a serem processadas.
+    drop_first : bool
+        Se True, remove a primeira categoria para evitar colinearidade.
+    force_ohe_columns : list
+        Lista de colunas para forçar OHE mesmo se numéricas.
+
+    Returns
+    -------
+    tuple
+        (X_values, feature_names_out, X_df, categorical_cols)
+    """
+    X_df = df[feature_names].copy()
+
+    force_ohe_columns = force_ohe_columns or []
+
+    # Detecta colunas não numéricas
+    categorical_cols = X_df.select_dtypes(exclude=[np.number]).columns.tolist()
+
+    # Adiciona colunas a forçar OHE (mesmo se forem numéricas)
+    for col in force_ohe_columns:
+        if col in X_df.columns and col not in categorical_cols:
+            categorical_cols.append(col)
+
+    if categorical_cols:
+        X_df = pd.get_dummies(X_df, columns=categorical_cols, drop_first=drop_first)
+
+    return X_df.values.astype(float), list(X_df.columns), X_df, categorical_cols
+
+
+# =============================================================================
 # FUNÇÃO PARA AVALIAR UMA COMBINAÇÃO (PARALELIZÁVEL)
 # =============================================================================
 
 def evaluate_combination(combo, df, target_column, hyperparam_grid, cv_folds,
-                         n_iter_search, random_state, n_jobs_inner):
+                         n_iter_search, random_state, n_jobs_inner,
+                         apply_ohe=True, drop_first_ohe=False, force_ohe_columns=None):
     """
     Avalia uma única combinação de features.
 
@@ -123,14 +170,26 @@ def evaluate_combination(combo, df, target_column, hyperparam_grid, cv_folds,
         n_iter_search: Iterações do RandomizedSearchCV
         random_state: Semente aleatória
         n_jobs_inner: Número de jobs para operações internas
+        apply_ohe: Se True, aplica One-Hot Encoding em variáveis categóricas
+        drop_first_ohe: Se True, remove a primeira categoria (evita colinearidade)
+        force_ohe_columns: Lista de colunas para forçar OHE
 
     Returns:
         dict: Resultados da avaliação
     """
     try:
         # Prepara dados
-        X = df[list(combo)].values.astype(float)
         y = df[target_column].values.astype(float)
+
+        # Aplica One-Hot Encoding se configurado
+        if apply_ohe:
+            X, feature_names_ohe, _, categorical_cols = apply_one_hot_encoding(
+                df, list(combo), drop_first=drop_first_ohe, force_ohe_columns=force_ohe_columns
+            )
+        else:
+            X = df[list(combo)].values.astype(float)
+            feature_names_ohe = list(combo)
+            categorical_cols = []
 
         # KFolds
         cv_tuning = KFold(n_splits=cv_folds, shuffle=True, random_state=random_state)
@@ -174,7 +233,9 @@ def evaluate_combination(combo, df, target_column, hyperparam_grid, cv_folds,
 
         return {
             'Features': combo,
+            'Categorical_Cols': categorical_cols if categorical_cols else None,
             'N_Features': len(combo),
+            'N_Features_Model': len(feature_names_ohe),
             'CV R²': r2_cv,
             'CV RMSE': rmse_cv,
             'CV MAE': mae_cv,
@@ -188,7 +249,9 @@ def evaluate_combination(combo, df, target_column, hyperparam_grid, cv_folds,
     except Exception as e:
         return {
             'Features': combo,
+            'Categorical_Cols': None,
             'N_Features': len(combo),
+            'N_Features_Model': np.nan,
             'CV R²': np.nan,
             'CV RMSE': np.nan,
             'CV MAE': np.nan,
@@ -197,67 +260,6 @@ def evaluate_combination(combo, df, target_column, hyperparam_grid, cv_folds,
             'Best Params': None,
             'Error': str(e)
         }
-
-
-def generate_diagnostic_plots(result, output_dir="../../Data/Plots"):
-    """
-    Gera gráficos de diagnóstico para um resultado.
-    """
-    if 'y_true' not in result or 'y_pred' not in result:
-        return
-
-    os.makedirs(output_dir, exist_ok=True)
-
-    y = result['y_true']
-    y_pred_cv = result['y_pred']
-    r2_cv = result['CV R²']
-    rmse_cv = result['CV RMSE']
-    n_features = result['N_Features']
-
-    fig, axis = plt.subplots(1, 3, figsize=(12, 4))
-    fig.suptitle(f"Random Forest - Validação Cruzada - {n_features} Features (R²={r2_cv:.4f})", fontsize=12)
-
-    # Gráfico 1: Observado vs Predito
-    axis[0].scatter(y, y_pred_cv, alpha=0.7, color=COLOR_PRIMARY)
-    axis[0].set_xlabel("VTCC Observado (m³/ha)")
-    axis[0].set_ylabel("VTCC Estimado (m³/ha)")
-    axis[0].plot([min(y), max(y)], [min(y), max(y)], color='red', linestyle='--', label='1:1')
-    axis[0].grid(linestyle='--', color='gray', alpha=0.2)
-    min_val = min(min(y), min(y_pred_cv)) * 0.95
-    max_val = max(max(y), max(y_pred_cv)) * 1.05
-    axis[0].set_xlim(min_val, max_val)
-    axis[0].set_ylim(min_val, max_val)
-    axis[0].set_title(f"Observado vs. Estimado\nR²={r2_cv:.3f}, RMSE={rmse_cv:.2f}")
-
-    # Gráfico 2: Resíduos vs Predito
-    residuals_raw_cv = (y_pred_cv - y) / y
-    axis[1].scatter(y_pred_cv, residuals_raw_cv, alpha=0.7, color=COLOR_PRIMARY)
-    axis[1].set_xlabel("VTCC Estimado (m³/ha)")
-    axis[1].set_ylabel("Resíduos Relativos")
-    axis[1].set_ylim(-1, 1)
-    axis[1].axhline(y=0, color='red', linestyle='--')
-    axis[1].grid(linestyle='--', color='gray', alpha=0.2)
-    axis[1].set_title("Resíduos vs. Estimado")
-
-    # Gráfico 3: Histograma de resíduos
-    weights = np.ones_like(residuals_raw_cv) / len(residuals_raw_cv) * 100
-    axis[2].hist(residuals_raw_cv, bins=30, weights=weights, alpha=0.7,
-                 color=COLOR_PRIMARY, edgecolor=COLOR_PRIMARY, linewidth=0.8)
-    axis[2].set_title("Distribuição dos Resíduos")
-    axis[2].set_xlabel("Resíduos Relativos")
-    axis[2].set_ylabel("Frequência (%)")
-    axis[2].set_xlim(-1, 1)
-    axis[2].axvline(x=0, color='red', linestyle='--')
-    axis[2].grid(linestyle='--', alpha=0.2, color='grey')
-
-    plt.tight_layout(rect=[0, 0, 1, 0.96])
-
-    # Salva figura
-    feature_str = "_".join([f[:6] for f in result['Features'][:3]])
-    filename = f"RF_R2_{r2_cv:.4f}_{n_features}feat_{feature_str}.png"
-    plt.savefig(os.path.join(output_dir, filename), dpi=300, bbox_inches='tight')
-    plt.close()
-
 
 def load_checkpoint(checkpoint_file):
     """Carrega checkpoint se existir."""
@@ -288,12 +290,14 @@ if __name__ == "__main__":
     df = pd.read_excel(INPUT_FILE)
     print(f"Dados carregados: {df.shape[0]} amostras")
 
-    # Gera todas as combinações
+    # Gera todas as combinações (limitado por MAX_FEATURES se definido)
     all_combinations = []
-    for r in range(1, len(FEATURE_NAMES) + 1):
+    max_r = MAX_FEATURES if MAX_FEATURES else len(FEATURE_NAMES)
+    for r in range(1, max_r + 1):
         all_combinations += list(combinations(FEATURE_NAMES, r))
 
     print(f"Features candidatas: {len(FEATURE_NAMES)}")
+    print(f"Máximo de features por combinação: {max_r}")
     print(f"Total de combinações a testar: {len(all_combinations):,}")
 
     # Verifica checkpoint
@@ -317,6 +321,7 @@ if __name__ == "__main__":
         print(f"\nUsando {n_cores} cores para processamento paralelo")
         print(f"N_ITER_SEARCH: {N_ITER_SEARCH}")
         print(f"Checkpoint a cada {CHECKPOINT_INTERVAL} combinações")
+        print(f"One-Hot Encoding: {'Ativado' if APPLY_ONE_HOT else 'Desativado'}")
 
         print("\n" + "=" * 60)
         print("INICIANDO AVALIAÇÃO DAS COMBINAÇÕES")
@@ -337,7 +342,8 @@ if __name__ == "__main__":
             batch_results = Parallel(n_jobs=N_JOBS_OUTER, verbose=1)(
                 delayed(evaluate_combination)(
                     combo, df, TARGET_COLUMN, HYPERPARAM_GRID,
-                    CV_FOLDS, N_ITER_SEARCH, RANDOM_STATE, N_JOBS_INNER
+                    CV_FOLDS, N_ITER_SEARCH, RANDOM_STATE, N_JOBS_INNER,
+                    APPLY_ONE_HOT, DROP_FIRST_OHE, FORCE_OHE_COLUMNS
                 )
                 for combo in tqdm(batch, desc=f"Batch {batch_idx + 1}")
             )
@@ -374,12 +380,6 @@ if __name__ == "__main__":
     # Exporta para Excel
     results_df.to_excel(OUTPUT_FILE, index=False)
     print(f"\nResultados exportados para:\n  {OUTPUT_FILE}")
-
-    # Gera gráficos apenas para top N
-    print(f"\nGerando gráficos para top {TOP_N_PLOTS} combinações...")
-    top_results = sorted(results, key=lambda x: x.get('CV R²', 0), reverse=True)[:TOP_N_PLOTS]
-    for r in tqdm(top_results, desc="Gerando gráficos"):
-        generate_diagnostic_plots(r)
 
     # Remove checkpoint após conclusão bem-sucedida
     if os.path.exists(CHECKPOINT_FILE):

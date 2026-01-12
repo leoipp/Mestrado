@@ -3,7 +3,7 @@ GenerateInteractionRasters.py - Geração de Rasters de Interação para Prediç
 
 Este script gera rasters de interação a partir de rasters base (variáveis contínuas)
 e rasters indicadores (variáveis dummy/categóricas), replicando a lógica de
-feature engineering do 04_RandomForestTrain.py.
+feature engineering do 05_RandomForestTrain.py.
 
 Workflow:
     1. Carrega rasters base (ex: Elev_P90.tif, Elev_P60.tif)
@@ -461,7 +461,7 @@ def generate_all_model_rasters(
     Gera todos os rasters necessários para o modelo RF, incluindo interações.
 
     Esta é a função principal para preparar os rasters para predição espacial.
-    Replica exatamente a configuração do 04_RandomForestTrain.py.
+    Replica exatamente a configuração do 05_RandomForestTrain.py.
 
     Parameters
     ----------
@@ -504,7 +504,7 @@ def generate_all_model_rasters(
     ...     raster_dir='./Data/Rasters/'
     ... )
     """
-    # Configuração do modelo (espelha 04_RandomForestTrain.py)
+    # Configuração do modelo (espelha 05_RandomForestTrain.py)
     BASE_FEATURES = ['Elev_P90', 'Elev_P60', 'Elev_maximum']
     INDICATOR_PREFIXES = ['REGIONAL_', 'ROTACAO_', 'Idade_']
 

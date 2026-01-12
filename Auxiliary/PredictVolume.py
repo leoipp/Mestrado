@@ -62,7 +62,7 @@ except ImportError:
 
 
 # =============================================================================
-# CLASSE MLP (compatível com 05_NeuralNetworkTrain.py)
+# CLASSE MLP (compatível com 06_NeuralNetworkTrain.py)
 # =============================================================================
 
 if HAS_TORCH:

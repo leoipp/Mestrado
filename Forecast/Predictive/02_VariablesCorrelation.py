@@ -41,7 +41,7 @@ INPUT_FILE = r"G:\PycharmProjects\Mestrado\Data\DataFrames\IFC_LiDAR_Plots_RTK_C
 OUTPUT_RFE_SUMMARY = ".\Results\RFE_Metrics_Target.xlsx"
 
 # Parâmetros de análise
-CORRELATION_THRESHOLD = 0.6      # Limiar mínimo de correlação com VTCC
+CORRELATION_THRESHOLD = 0.7      # Limiar mínimo de correlação com VTCC
 CV_FOLDS = 5                    # Número de folds para validação cruzada
 RANDOM_STATE = 42                # Semente para reprodutibilidade
 

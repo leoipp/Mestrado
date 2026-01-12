@@ -1,5 +1,5 @@
 """
-04_RandomForestTrain.py - Treinamento do Modelo Random Forest para Predição de Volume
+05_RandomForestTrain.py - Treinamento do Modelo Random Forest para Predição de Volume
 
 Este script treina um modelo Random Forest Regressor para predição de volume florestal
 (VTCC - Volume Total Com Casca) utilizando métricas LiDAR e variáveis auxiliares.
@@ -53,7 +53,7 @@ FEATURE_NAMES = [
     'Elev CURT mean CUBE',        # Percentil 60 - estrutura média do dossel
     'Elev stddev',
     'ROTACAO',         # Rotação florestal
-    'REGIONAL',        # Regional
+    'Regime',        # Regional
     'Idade (meses)'    # Idade do plantio
 ]
 
@@ -72,10 +72,10 @@ FORCE_OHE_COLUMNS = [] # Colunas a forçar OHE mesmo se numéricas
 # Feature Engineering (Interações)
 CREATE_INTERACTIONS = True  # Se True, cria variáveis de interação
 # Quais variáveis (após OHE) você quer multiplicar (ex.: LiDAR contínuas)
-INTERACTION_BASE_FEATURES = ['Elev P90', 'Elev CURT mean CUBE']
+INTERACTION_BASE_FEATURES = ['Elev P90', 'Elev CURT mean CUBE', 'Elev stddev']
 # Prefixos/colunas que serão tratadas como "indicadores" (ex.: OHE de REGIONAL/ROTACAO)
 # Você pode colocar prefixos, e o código pega todas as colunas que começam com isso.
-INTERACTION_INDICATOR_PREFIXES = ['REGIONAL_', 'ROTACAO_', 'Idade (meses)']
+INTERACTION_INDICATOR_PREFIXES = ['REGIONAL_', 'Regime_', 'Idade (meses)']
 # Se True, remove as colunas originais usadas nas interações (geralmente deixe False)
 DROP_ORIGINAL_AFTER_INTERACTIONS = False
 
@@ -595,7 +595,7 @@ def train_random_forest(
     print("[7/7] Exportando resultados...")
 
     if save_model:
-        model_path = MODEL_DIR / 'RF_Regressor_P90_CUB.pkl'
+        model_path = MODEL_DIR / 'RF_Regressor_P90_CUB_STD.pkl'
         joblib.dump(rf_optimized, model_path)
         print(f"  Modelo salvo: {model_path}")
 

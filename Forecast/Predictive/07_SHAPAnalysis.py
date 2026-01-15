@@ -27,8 +27,17 @@ Saídas:
     - Results/SHAP_Summary.png: Resumo da importância das features
     - Results/SHAP_Beeswarm.png: Distribuição dos valores SHAP
     - Results/SHAP_Dependence_*.png: Gráficos de dependência parcial
+    - Results/SHAP_Dependence_*_x_*.png: Gráficos de dependência com interações
+    - Results/SHAP_Dependence_*_by_Age_Groups.png: Efeito por faixa de idade
+    - Results/SHAP_Dependence_*_by_Regime.png: Efeito por regime de manejo
+    - Results/SHAP_Dependence_Subplot_3x2.png: Subplot combinado (3x2) com:
+        * Linha 1: Z Kurt, Z P90, Z σ coloridos por Idade (símbolos por Regional)
+        * Linha 2: Z Kurt, Z P90, Z σ coloridos por Regime (símbolos por Regional)
     - Results/SHAP_Interactions.png: Análise de interações
     - Results/SHAP_Waterfall_*.png: Explicações individuais
+    - Results/SHAP_Waterfall_Subplot_3x3.png: Subplot combinado (3x3) com:
+        * Linhas: VTCC alto, intermediário, baixo
+        * Colunas: Erro relativo baixo, médio, alto
     - Results/SHAP_Analysis_Report.xlsx: Relatório completo
 
 Autor: Leonardo Ippolito Rodrigues
@@ -55,7 +64,7 @@ warnings.filterwarnings('ignore')
 
 # Caminhos
 INPUT_FILE = r"G:\PycharmProjects\Mestrado\Data\DataFrames\IFC_LiDAR_Plots_RTK_Cleaned_v02.xlsx"
-MODEL_FILE = r"G:\PycharmProjects\Mestrado\Forecast\Predictive\Models\RF_Regressor_P90_CUB.pkl"
+MODEL_FILE = r"G:\PycharmProjects\Mestrado\Forecast\Predictive\Models\RF_Regressor_P90_CUB_STD.pkl"
 OUTPUT_DIR = Path(r"G:\PycharmProjects\Mestrado\Forecast\Predictive\Results")
 
 # Variáveis (devem corresponder às usadas no treinamento)
@@ -63,7 +72,7 @@ FEATURE_NAMES = [
     'Elev P90',
     'Elev CURT mean CUBE',        # Percentil 60 - estrutura média do dossel
     'Elev stddev',
-    'ROTACAO',
+    'Regime',
     'REGIONAL',
     'Idade (meses)'
 ]
@@ -77,8 +86,8 @@ FORCE_OHE_COLUMNS = []
 
 # Feature Engineering (mesmo do treinamento)
 CREATE_INTERACTIONS = True
-INTERACTION_BASE_FEATURES = ['Elev P90', 'Elev P60', 'Elev maximum']
-INTERACTION_INDICATOR_PREFIXES = ['REGIONAL_', 'ROTACAO_', 'Idade (meses)']
+INTERACTION_BASE_FEATURES = ['Elev P90', 'Elev CURT mean CUBE', 'Elev stddev']
+INTERACTION_INDICATOR_PREFIXES = ['REGIONAL_', 'Regime_', 'Idade (meses)']
 DROP_ORIGINAL_AFTER_INTERACTIONS = False
 
 # Número de amostras para análise SHAP (None = todas)
@@ -92,22 +101,119 @@ INDIVIDUAL_CASES = None  # Se None, seleciona automaticamente
 
 # Configuração de estilo dos gráficos
 plt.rcParams.update({
-    "font.family": "Times New Roman",
-    "font.size": 10,
-    "axes.titlesize": 11,
-    "axes.labelsize": 10,
-    "xtick.labelsize": 9,
-    "ytick.labelsize": 9,
-    "figure.dpi": 300,
-    "figure.facecolor": "white"
-})
+    # Fonte
+    'font.family': 'serif',
+    'font.serif': ['Times New Roman', 'DejaVu Serif', 'serif'],
+    'font.size': 11,
 
+    # Eixos
+    'axes.labelsize': 12,
+    'axes.titlesize': 13,
+    'axes.linewidth': 0.8,
+    'axes.spines.top': False,     # Sem frame superior
+    'axes.spines.right': False,   # Sem frame direito
+    'axes.spines.left': True,
+    'axes.spines.bottom': True,
+
+    # Ticks
+    'xtick.labelsize': 10,
+    'ytick.labelsize': 10,
+    'xtick.major.width': 0.8,
+    'ytick.major.width': 0.8,
+    'xtick.direction': 'out',
+    'ytick.direction': 'out',
+
+    # Legenda
+    'legend.fontsize': 10,
+    'legend.frameon': False,
+    'legend.framealpha': 0.9,
+
+    # Figura
+    'figure.dpi': 100,
+    'savefig.dpi': 300,
+    'savefig.bbox': 'tight',
+    'savefig.pad_inches': 0.1,
+
+    # Grid (horizontal sutil)
+    'axes.grid': False,
+    'grid.alpha': 0.4,
+    'grid.linestyle': '--',
+    'grid.color': '#cccccc',
+})
 # Cores
 COLOR_PRIMARY = '#1f77b4'
 COLOR_SECONDARY = '#ff7f0e'
 COLOR_POSITIVE = '#d62728'
 COLOR_NEGATIVE = '#2ca02c'
 
+import re
+import unicodedata
+from typing import Dict, Optional
+
+# (Opcional) dicionário de aliases manuais para casos que você quer controlar 100%
+FEATURE_ALIASES: Dict[str, str] = {
+    "Elev CURT mean CUBE": "Z Kurt",
+    "Elev stddev": "Z σ",
+    "Elev P90": "Z P90",
+    "Idade (meses)": "Idade (meses)"
+}
+
+def _strip_accents(s: str) -> str:
+    """Remove acentos para nome seguro de arquivo."""
+    return "".join(c for c in unicodedata.normalize("NFKD", s) if not unicodedata.combining(c))
+
+def pretty_feature_name(name: str, aliases: Optional[Dict[str, str]] = None) -> str:
+    """
+    Nome 'bonito' para aparecer em plots (eixos/labels).
+    Regras:
+      - aplica aliases manuais
+      - transforma interações '__x__' em ' × '
+      - deixa dummies mais legíveis (REGIONAL_GN -> Regional: GN; Regime_Alto fuste -> Regime: Alto fuste)
+    """
+    aliases = aliases or {}
+    if name in aliases:
+        return aliases[name]
+
+    s = str(name)
+
+    # Interações
+    s = s.replace("__x__", " × ")
+
+    # Regime_Alto fuste -> Regime: Alto fuste
+    s = re.sub(r"^Regime_(.+)$", r"Regime: \1", s)
+
+    # Ajustes estéticos comuns
+    s = s.replace("Elev ", "Z ")          # tira prefixo "Elev " se você quiser
+    s = s.replace("CURT mean CUBE", "Kurt")
+    s = s.replace("stddev", "σ")
+    s = s.replace("P90", "P90")         # aqui só pra exemplo (poderia padronizar)
+    s = s.replace("REGIONAL_", "Regional: ")
+    s = s.replace("GN", "01")               # só pra garantir
+    s = s.replace("NE", "02")  # só pra garantir
+    s = s.replace("RD", "03")  # só pra garantir
+    s = re.sub(r"\s+", " ", s).strip()  # normaliza espaços
+
+    return s
+
+def safe_filename(name: str, max_len: int = 80) -> str:
+    """
+    Nome seguro para arquivo (sem espaços estranhos, sem acento, sem símbolos).
+    """
+    s = str(name)
+    s = _strip_accents(s)
+
+    # troca símbolos e separadores
+    s = s.replace("__x__", "_x_")
+    s = s.replace("×", "x")
+
+    # mantém apenas [A-Za-z0-9._-]
+    s = re.sub(r"[^A-Za-z0-9._-]+", "_", s)
+    s = re.sub(r"_+", "_", s).strip("_")
+
+    if len(s) > max_len:
+        s = s[:max_len].rstrip("_")
+
+    return s
 
 # =============================================================================
 # FUNÇÕES AUXILIARES (do treinamento)
@@ -226,7 +332,7 @@ def plot_summary_bar(shap_values: np.ndarray, feature_names: List[str],
     total_importance = mean_abs_shap.sum()
 
     importance_df = pd.DataFrame({
-        'Feature': feature_names,
+        'Feature': [pretty_feature_name(f, FEATURE_ALIASES) for f in feature_names],
         'Mean_SHAP': mean_abs_shap
     }).sort_values('Mean_SHAP', ascending=False)
 
@@ -262,24 +368,25 @@ def plot_summary_bar(shap_values: np.ndarray, feature_names: List[str],
         if fname.startswith('Outras'):
             colors.append('#808080')  # Cinza para "Outras"
         else:
-            colors.append(plt.cm.Blues(0.3 + 0.6 * (list(plot_df['Feature']).index(fname) / n_bars)))
+            colors.append(plt.cm.YlGnBu(0.3 + 0.6 * (list(plot_df['Feature']).index(fname) / n_bars)))
 
     bars = ax.barh(range(n_bars), plot_df['Mean_SHAP'],
                    color=colors, edgecolor='white', linewidth=0.5)
 
     ax.set_yticks(range(n_bars))
     ax.set_yticklabels(plot_df['Feature'])
-    ax.set_xlabel('Importância SHAP Média (|SHAP|)')
-    ax.set_title('Importância Global das Variáveis - SHAP')
+    ax.set_xlabel('Importância SHAP Média')
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
     ax.grid(axis='x', linestyle='--', alpha=0.3)
 
     # Adiciona valores e porcentagens
     max_val = plot_df['Mean_SHAP'].max()
     for i, (bar, row) in enumerate(zip(bars, plot_df.itertuples())):
         if show_pct:
-            label = f'{row.Mean_SHAP:.2f} ({row.Pct:.1f}%)'
+            label = f'{row.Mean_SHAP:.2f} ({row.Pct:.1f}%)'.replace('.', ',')
         else:
-            label = f'{row.Mean_SHAP:.2f}'
+            label = f'{row.Mean_SHAP:.2f}'.replace('.', ',')
         ax.text(row.Mean_SHAP + 0.01 * max_val,
                 bar.get_y() + bar.get_height() / 2,
                 label, va='center', fontsize=8)
@@ -360,34 +467,74 @@ def plot_dependence(shap_values: np.ndarray, X: np.ndarray, feature_names: List[
 
     Mostra como o valor SHAP de uma feature varia com seu valor,
     opcionalmente colorido por uma feature de interação.
+
+    Para variáveis binárias (Regime), usa cores categóricas distintas.
     """
     feature_name = feature_names[feature_idx]
+    feature_name_pretty = pretty_feature_name(feature_name, FEATURE_ALIASES)
 
     fig, ax = plt.subplots(figsize=(10, 6))
 
     if interaction_idx is not None:
         interaction_name = feature_names[interaction_idx]
-        scatter = ax.scatter(X[:, feature_idx], shap_values[:, feature_idx],
-                             c=X[:, interaction_idx], cmap='coolwarm',
-                             alpha=0.6, s=20)
-        plt.colorbar(scatter, label=interaction_name)
-        title = f'Dependência SHAP: {feature_name}\n(cor: {interaction_name})'
+        interaction_name_pretty = pretty_feature_name(interaction_name, FEATURE_ALIASES)
+        interaction_values = X[:, interaction_idx]
+
+        # Verifica se é variável binária (Regime)
+        unique_vals = np.unique(interaction_values)
+        is_binary = len(unique_vals) == 2 and set(unique_vals) == {0, 1}
+
+        if is_binary:
+            # Cores categóricas para variáveis binárias
+            colors = ['#2166ac', '#b2182b']  # Azul para 0, Vermelho para 1
+            labels = ['Talhadia', 'Alto fuste'] if 'Regime' in interaction_name else ['0', '1']
+
+            for val, color, label in zip([0, 1], colors, labels):
+                mask = interaction_values == val
+                ax.scatter(X[mask, feature_idx], shap_values[mask, feature_idx],
+                           c=color, alpha=0.6, s=25, label=label, edgecolors='white', linewidth=0.3)
+
+            ax.legend(title=interaction_name_pretty, loc='best', frameon=True, fancybox=False)
+            title = f'Dependência SHAP: {feature_name_pretty}\n(por {interaction_name_pretty})'
+        else:
+            # Escala contínua para variáveis numéricas (Idade)
+            scatter = ax.scatter(X[:, feature_idx], shap_values[:, feature_idx],
+                                 c=interaction_values, cmap='viridis',
+                                 alpha=0.6, s=25, edgecolors='white', linewidth=0.3)
+            cbar = plt.colorbar(scatter, ax=ax)
+            cbar.set_label(interaction_name_pretty, fontsize=11)
+            title = f'Dependência SHAP: {feature_name_pretty}\n(cor: {interaction_name_pretty})'
+
+        # Adiciona linha de tendência LOWESS para visualizar padrão
+        try:
+            from scipy.ndimage import uniform_filter1d
+            # Ordena por X para suavização
+            sort_idx = np.argsort(X[:, feature_idx])
+            x_sorted = X[sort_idx, feature_idx]
+            y_sorted = shap_values[sort_idx, feature_idx]
+            # Suavização simples
+            window = max(5, len(x_sorted) // 20)
+            y_smooth = uniform_filter1d(y_sorted.astype(float), size=window)
+            ax.plot(x_sorted, y_smooth, 'k-', linewidth=2, alpha=0.7, label='Tendência')
+        except Exception:
+            pass  # Ignora se não conseguir calcular tendência
+
     else:
         ax.scatter(X[:, feature_idx], shap_values[:, feature_idx],
-                   alpha=0.6, s=20, c=COLOR_PRIMARY)
-        title = f'Dependência SHAP: {feature_name}'
+                   alpha=0.6, s=25, c=COLOR_PRIMARY, edgecolors='white', linewidth=0.3)
+        title = f'Dependência SHAP: {feature_name_pretty}'
 
-    ax.axhline(y=0, color='gray', linestyle='--', linewidth=1)
-    ax.set_xlabel(f'Valor de {feature_name}')
-    ax.set_ylabel(f'Valor SHAP para {feature_name}')
-    ax.set_title(title)
+    ax.axhline(y=0, color='gray', linestyle='--', linewidth=1, alpha=0.7)
+    ax.set_xlabel(feature_name_pretty, fontsize=12)
+    ax.set_ylabel(f'Valor SHAP ({feature_name_pretty})', fontsize=12)
+    ax.set_title(title, fontsize=13)
     ax.grid(linestyle='--', alpha=0.3)
 
     plt.tight_layout()
 
     if output_path:
         plt.savefig(output_path, dpi=300, bbox_inches='tight')
-        print(f"  Gráfico salvo: {output_path}")
+        print(f"    Gráfico salvo: {output_path.name}")
 
     plt.show()
 
@@ -550,6 +697,531 @@ def analyze_interactions(shap_values: np.ndarray, X: np.ndarray,
     df = df.sort_values('Interaction_Strength', ascending=False).head(top_n)
 
     return df
+
+
+def plot_dependence_by_age_groups(shap_values: np.ndarray, X: np.ndarray,
+                                   feature_names: List[str], feature_idx: int,
+                                   age_idx: int, output_path: Path = None,
+                                   n_groups: int = 3):
+    """
+    Gera gráfico de dependência SHAP separado por faixas de idade.
+
+    Mostra claramente como o efeito da feature se intensifica em
+    povoamentos mais maduros através de linhas de tendência separadas.
+
+    Parameters
+    ----------
+    n_groups : int
+        Número de faixas de idade (default: 3 = Jovem, Intermediário, Maduro)
+    """
+    feature_name = feature_names[feature_idx]
+    feature_name_pretty = pretty_feature_name(feature_name, FEATURE_ALIASES)
+
+    age_values = X[:, age_idx]
+    age_percentiles = np.percentile(age_values, [33, 66])
+
+    # Define grupos de idade
+    young_mask = age_values <= age_percentiles[0]
+    mid_mask = (age_values > age_percentiles[0]) & (age_values <= age_percentiles[1])
+    mature_mask = age_values > age_percentiles[1]
+
+    groups = [
+        (young_mask, f'Jovem (<{age_percentiles[0]:.0f} meses)', '#3288bd'),
+        (mid_mask, f'Intermediário', '#fdae61'),
+        (mature_mask, f'Maduro (>{age_percentiles[1]:.0f} meses)', '#d53e4f')
+    ]
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    for mask, label, color in groups:
+        if mask.sum() > 10:  # Mínimo de pontos para plotar
+            x_group = X[mask, feature_idx]
+            y_group = shap_values[mask, feature_idx]
+
+            # Scatter plot
+            ax.scatter(x_group, y_group, c=color, alpha=0.4, s=20, label=f'{label} (n={mask.sum()})')
+
+            # Linha de tendência (regressão polinomial grau 2)
+            try:
+                sort_idx = np.argsort(x_group)
+                x_sorted = x_group[sort_idx]
+                y_sorted = y_group[sort_idx]
+
+                # Ajuste polinomial
+                z = np.polyfit(x_sorted, y_sorted, 2)
+                p = np.poly1d(z)
+                x_line = np.linspace(x_sorted.min(), x_sorted.max(), 100)
+                ax.plot(x_line, p(x_line), c=color, linewidth=2.5, alpha=0.9)
+            except Exception:
+                pass
+
+    ax.axhline(y=0, color='gray', linestyle='--', linewidth=1, alpha=0.7)
+    ax.set_xlabel(feature_name_pretty, fontsize=12)
+    ax.set_ylabel(f'Valor SHAP ({feature_name_pretty})', fontsize=12)
+    ax.set_title(f'Efeito de {feature_name_pretty} por Faixa de Idade\n'
+                 f'(intensificação em povoamentos maduros)', fontsize=13)
+    ax.legend(title='Faixa de Idade', loc='best', frameon=True, fancybox=False)
+    ax.grid(linestyle='--', alpha=0.3)
+
+    plt.tight_layout()
+
+    if output_path:
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        print(f"    Gráfico salvo: {output_path.name}")
+
+    plt.show()
+
+
+def plot_dependence_by_regime(shap_values: np.ndarray, X: np.ndarray,
+                               feature_names: List[str], feature_idx: int,
+                               regime_idx: int, output_path: Path = None):
+    """
+    Gera gráfico de dependência SHAP comparando regimes de manejo.
+
+    Mostra como o efeito da feature difere entre Alto fuste e Talhadia,
+    com linhas de tendência separadas para cada regime.
+    """
+    feature_name = feature_names[feature_idx]
+    feature_name_pretty = pretty_feature_name(feature_name, FEATURE_ALIASES)
+
+    regime_values = X[:, regime_idx]
+
+    # Define grupos por regime
+    talhadia_mask = regime_values == 0
+    alto_fuste_mask = regime_values == 1
+
+    groups = [
+        (talhadia_mask, 'Talhadia', '#2166ac'),
+        (alto_fuste_mask, 'Alto fuste', '#b2182b')
+    ]
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    for mask, label, color in groups:
+        if mask.sum() > 10:
+            x_group = X[mask, feature_idx]
+            y_group = shap_values[mask, feature_idx]
+
+            # Scatter plot
+            ax.scatter(x_group, y_group, c=color, alpha=0.4, s=20,
+                       label=f'{label} (n={mask.sum()})', edgecolors='white', linewidth=0.2)
+
+            # Linha de tendência
+            try:
+                sort_idx = np.argsort(x_group)
+                x_sorted = x_group[sort_idx]
+                y_sorted = y_group[sort_idx]
+
+                z = np.polyfit(x_sorted, y_sorted, 2)
+                p = np.poly1d(z)
+                x_line = np.linspace(x_sorted.min(), x_sorted.max(), 100)
+                ax.plot(x_line, p(x_line), c=color, linewidth=2.5, alpha=0.9)
+            except Exception:
+                pass
+
+    ax.axhline(y=0, color='gray', linestyle='--', linewidth=1, alpha=0.7)
+    ax.set_xlabel(feature_name_pretty, fontsize=12)
+    ax.set_ylabel(f'Valor SHAP ({feature_name_pretty})', fontsize=12)
+    ax.set_title(f'Efeito de {feature_name_pretty} por Regime de Manejo\n'
+                 f'(amplificação em alto fuste vs modulação em talhadia)', fontsize=13)
+    ax.legend(title='Regime', loc='best', frameon=True, fancybox=False)
+    ax.grid(linestyle='--', alpha=0.3)
+
+    plt.tight_layout()
+
+    if output_path:
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        print(f"    Gráfico salvo: {output_path.name}")
+
+    plt.show()
+
+
+def plot_shap_dependence_subplot_3x2(shap_values: np.ndarray, X: np.ndarray,
+                                      feature_names: List[str],
+                                      output_path: Path = None):
+    """
+    Gera subplot 3x2 de dependência SHAP.
+
+    Linha 1: SHAP vs (Z Kurt, Z P90, Z Std) - cor por Idade, símbolo por Regional
+    Linha 2: SHAP vs (Z Kurt, Z P90, Z Std) - cor por Regime, símbolo por Regional
+
+    Parameters
+    ----------
+    shap_values : np.ndarray
+        Valores SHAP calculados.
+    X : np.ndarray
+        Matriz de features.
+    feature_names : list
+        Nomes das features.
+    output_path : Path, optional
+        Caminho para salvar a figura.
+    """
+    import matplotlib.ticker as mticker
+
+    # Formatter para trocar . por , (sem decimal se for inteiro)
+    def comma_formatter(x, pos):
+        if x == int(x):
+            return f'{int(x)}'
+        return f'{x:.1f}'.replace('.', ',')
+
+    # Features principais para os gráficos
+    main_features = ['Elev CURT mean CUBE', 'Elev P90', 'Elev stddev']
+    main_labels = ['Z Kurt', 'Z P90', r'Z $\sigma$']
+
+    # Encontra índices das features
+    main_indices = []
+    for feat in main_features:
+        if feat in feature_names:
+            main_indices.append(feature_names.index(feat))
+        else:
+            print(f"    Aviso: Feature {feat} não encontrada")
+            return
+
+    # Índices para Idade e Regime
+    age_idx = feature_names.index('Idade (meses)') if 'Idade (meses)' in feature_names else None
+    regime_idx = feature_names.index('Regime_Alto fuste') if 'Regime_Alto fuste' in feature_names else None
+
+    # Índices para Regionais
+    regional_cols = {
+        'REGIONAL_GN': ('o', 'Regional 01'),
+        'REGIONAL_NE': ('s', 'Regional 02'),
+        'REGIONAL_RD': ('^', 'Regional 03')
+    }
+
+    regional_indices = {}
+    for col, (marker, label) in regional_cols.items():
+        if col in feature_names:
+            regional_indices[col] = (feature_names.index(col), marker, label)
+
+    if not regional_indices:
+        print("    Aviso: Nenhuma coluna Regional encontrada")
+        return
+
+    # Cria figura 3x2 com escalas Y compartilhadas por linha
+    fig, axes = plt.subplots(2, 3, figsize=(13, 7), sharey='row')
+
+    # Reduz espaçamento entre subplots e reserva espaço para colorbar à direita
+    plt.subplots_adjust(wspace=0.05, hspace=0.25, right=0.88)
+
+    # Configuração de cores
+    cmap_age = plt.cm.viridis
+    colors_regime = {'Talhadia': '#2166ac', 'Alto fuste': '#b2182b'}
+
+    # Labels dos painéis: (a), (b), (c), (d), (e), (f)
+    panel_labels = ['(a)', '(b)', '(c)', '(d)', '(e)', '(f)']
+
+    # ==========================================================================
+    # LINHA 1: Colorido por IDADE, símbolo por REGIONAL
+    # ==========================================================================
+    for col_idx, (feat_idx, feat_label) in enumerate(zip(main_indices, main_labels)):
+        ax = axes[0, col_idx]
+
+        if age_idx is not None:
+            age_values = X[:, age_idx]
+            norm = plt.Normalize(vmin=age_values.min(), vmax=age_values.max())
+
+            # Plota cada regional com símbolo diferente
+            for reg_col, (reg_idx, marker, reg_label) in regional_indices.items():
+                mask = X[:, reg_idx] == 1
+
+                if mask.sum() > 0:
+                    sc = ax.scatter(
+                        X[mask, feat_idx],
+                        shap_values[mask, feat_idx],
+                        c=age_values[mask],
+                        cmap=cmap_age,
+                        norm=norm,
+                        marker=marker,
+                        s=35,
+                        alpha=0.7,
+                        edgecolors='white',
+                        linewidth=0.3,
+                        label=reg_label
+                    )
+
+            # Colorbar em eixo separado (apenas uma vez, no último gráfico)
+            if col_idx == 2:
+                # Cria eixo para colorbar à direita da figura (alinhado com linha 1)
+                cax = fig.add_axes([0.90, 0.53, 0.02, 0.35])  # [left, bottom, width, height]
+                cbar = fig.colorbar(sc, cax=cax)
+                cbar.set_label('Idade (meses)', fontsize=10)
+                # Formata colorbar com vírgula
+                cbar.ax.yaxis.set_major_formatter(mticker.FuncFormatter(comma_formatter))
+
+        ax.axhline(y=0, color='gray', linestyle='--', linewidth=1, alpha=0.5)
+        ax.set_xlabel(feat_label, fontsize=11)
+
+        # Formata eixos com vírgula
+        ax.xaxis.set_major_formatter(mticker.FuncFormatter(comma_formatter))
+        ax.yaxis.set_major_formatter(mticker.FuncFormatter(comma_formatter))
+
+        # Apenas primeira coluna tem ylabel e spines completos
+        if col_idx == 0:
+            ax.set_ylabel('Valor SHAP', fontsize=11)
+            ax.spines['left'].set_visible(True)
+            # Legenda apenas no primeiro gráfico
+            ax.legend(title='Regional', loc='upper left', fontsize=8,
+                     title_fontsize=9, frameon=True, fancybox=False)
+        else:
+            # Remove spines e ticks Y das colunas 2 e 3
+            ax.spines['left'].set_visible(False)
+            ax.tick_params(left=False)
+
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.grid(linestyle='--', alpha=0.3)
+
+        # Adiciona label do painel no canto superior esquerdo (fora do gráfico)
+        ax.text(0.0, 1.05, panel_labels[col_idx], transform=ax.transAxes,
+                fontsize=12, va='bottom', ha='left')
+
+    # ==========================================================================
+    # LINHA 2: Colorido por REGIME, símbolo por REGIONAL
+    # ==========================================================================
+    for col_idx, (feat_idx, feat_label) in enumerate(zip(main_indices, main_labels)):
+        ax = axes[1, col_idx]
+
+        if regime_idx is not None:
+            regime_values = X[:, regime_idx]
+
+            # Plota cada combinação Regional x Regime
+            for reg_col, (reg_idx, marker, reg_label) in regional_indices.items():
+                for regime_val, (regime_name, color) in enumerate(colors_regime.items()):
+                    mask = (X[:, reg_idx] == 1) & (regime_values == regime_val)
+
+                    if mask.sum() > 0:
+                        ax.scatter(
+                            X[mask, feat_idx],
+                            shap_values[mask, feat_idx],
+                            c=color,
+                            marker=marker,
+                            s=35,
+                            alpha=0.7,
+                            edgecolors='white',
+                            linewidth=0.3,
+                            label=f'{reg_label} - {regime_name}' if col_idx == 0 else None
+                        )
+
+        ax.axhline(y=0, color='gray', linestyle='--', linewidth=1, alpha=0.5)
+        ax.set_xlabel(feat_label, fontsize=11)
+
+        # Formata eixos com vírgula
+        ax.xaxis.set_major_formatter(mticker.FuncFormatter(comma_formatter))
+        ax.yaxis.set_major_formatter(mticker.FuncFormatter(comma_formatter))
+
+        # Apenas primeira coluna tem ylabel e spines completos
+        if col_idx == 0:
+            ax.set_ylabel('Valor SHAP', fontsize=11)
+            ax.spines['left'].set_visible(True)
+            # Legenda apenas no primeiro gráfico
+            ax.legend(title='Regional - Regime', loc='upper left', fontsize=7,
+                     title_fontsize=8, frameon=True, fancybox=False, ncol=1)
+        else:
+            # Remove spines e ticks Y das colunas 2 e 3
+            ax.spines['left'].set_visible(False)
+            ax.tick_params(left=False)
+
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.grid(linestyle='--', alpha=0.3)
+
+        # Adiciona label do painel no canto superior esquerdo (fora do gráfico)
+        ax.text(0.0, 1.05, panel_labels[col_idx + 3], transform=ax.transAxes,
+                fontsize=12, va='bottom', ha='left')
+
+    if output_path:
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        print(f"    Gráfico salvo: {output_path.name}")
+
+    plt.show()
+
+
+def plot_waterfall_subplot_3x3(explainer, shap_values: np.ndarray, X: np.ndarray,
+                                feature_names: List[str], y_true: np.ndarray,
+                                y_pred: np.ndarray, output_path: Path = None,
+                                max_display: int = 10):
+    """
+    Gera subplot 3x3 de waterfall plots.
+
+    Organização:
+        Linhas: VTCC alto, intermediário, baixo
+        Colunas: Erro relativo baixo, médio, alto
+
+    Demonstra que as predições resultam de combinações coerentes de efeitos
+    positivos e negativos, sem dependência excessiva de uma única variável.
+
+    Parameters
+    ----------
+    explainer : shap.TreeExplainer
+        Explainer SHAP.
+    shap_values : np.ndarray
+        Valores SHAP calculados.
+    X : np.ndarray
+        Matriz de features.
+    feature_names : list
+        Nomes das features.
+    y_true : np.ndarray
+        Valores observados.
+    y_pred : np.ndarray
+        Valores preditos.
+    output_path : Path, optional
+        Caminho para salvar a figura.
+    max_display : int
+        Número máximo de features a mostrar em cada waterfall.
+    """
+    import matplotlib.ticker as mticker
+
+    # Formatter para trocar . por , (sem decimal se for inteiro)
+    def comma_formatter(x, pos):
+        if x == int(x):
+            return f'{int(x)}'
+        return f'{x:.1f}'.replace('.', ',')
+
+    # Calcula erro relativo absoluto (%)
+    erro_rel = np.abs((y_pred - y_true) / y_true) * 100
+
+    # Define percentis para classificação
+    vtcc_p33, vtcc_p66 = np.percentile(y_true, [33, 66])
+    erro_p33, erro_p66 = np.percentile(erro_rel, [33, 66])
+
+    # Classifica amostras
+    vtcc_class = np.where(y_true <= vtcc_p33, 'baixo',
+                          np.where(y_true <= vtcc_p66, 'medio', 'alto'))
+    erro_class = np.where(erro_rel <= erro_p33, 'baixo',
+                          np.where(erro_rel <= erro_p66, 'medio', 'alto'))
+
+    # Encontra amostras representativas para cada célula do grid
+    grid_samples = {}
+    vtcc_levels = ['alto', 'medio', 'baixo']  # Linhas
+    erro_levels = ['baixo', 'medio', 'alto']  # Colunas
+
+    for vtcc_lvl in vtcc_levels:
+        for erro_lvl in erro_levels:
+            mask = (vtcc_class == vtcc_lvl) & (erro_class == erro_lvl)
+            candidates = np.where(mask)[0]
+
+            if len(candidates) > 0:
+                # Seleciona amostra mais próxima da mediana do grupo
+                group_vtcc = y_true[candidates]
+                median_vtcc = np.median(group_vtcc)
+                best_idx = candidates[np.argmin(np.abs(group_vtcc - median_vtcc))]
+                grid_samples[(vtcc_lvl, erro_lvl)] = best_idx
+            else:
+                grid_samples[(vtcc_lvl, erro_lvl)] = None
+
+    # Valor base do explainer
+    base_value = explainer.expected_value
+    if isinstance(base_value, np.ndarray):
+        base_value = base_value.mean() if len(base_value) > 1 else base_value[0]
+
+    # Cria figura 3x3
+    fig, axes = plt.subplots(3, 3, figsize=(15, 12))
+    plt.subplots_adjust(left=0.18, wspace=0.08, hspace=0.35, right=0.95)
+
+    # Labels dos painéis
+    panel_labels = ['(a)', '(b)', '(c)', '(d)', '(e)', '(f)', '(g)', '(h)', '(i)']
+
+    # Labels das linhas e colunas
+    row_labels = ['VTCC Alto', 'VTCC Intermediário', 'VTCC Baixo']
+    col_labels = ['ER Baixo', 'ER Médio', 'ER Alto']
+
+    panel_idx = 0
+    for row_idx, vtcc_lvl in enumerate(vtcc_levels):
+        for col_idx, erro_lvl in enumerate(erro_levels):
+            ax = axes[row_idx, col_idx]
+            sample_idx = grid_samples[(vtcc_lvl, erro_lvl)]
+
+            if sample_idx is not None:
+                # Obtém valores SHAP para esta amostra
+                sample_shap = shap_values[sample_idx]
+                sample_x = X[sample_idx]
+
+                # Ordena features por valor SHAP absoluto
+                sorted_idx = np.argsort(np.abs(sample_shap))[::-1][:max_display]
+
+                # Prepara dados para o waterfall manual
+                features_sorted = [pretty_feature_name(feature_names[i], FEATURE_ALIASES)
+                                   for i in sorted_idx]
+                shap_sorted = sample_shap[sorted_idx]
+
+                # Cores: YlGnBu para positivos, YlOrRd para negativos (baseado na posição)
+                n_bars = len(shap_sorted)
+                colors = []
+                for i, v in enumerate(shap_sorted):
+                    intensity = 0.3 + 0.6 * (i / n_bars)
+                    if v >= 0:
+                        colors.append(plt.cm.YlGnBu(intensity))
+                    else:
+                        colors.append(plt.cm.YlOrRd(intensity))
+
+                # Posições das barras
+                y_pos = np.arange(len(features_sorted))[::-1]
+
+                # Plota barras horizontais
+                bars = ax.barh(y_pos, shap_sorted, color=colors, height=0.7,
+                              edgecolor='white', linewidth=0.5)
+
+                # Configuração do eixo
+                ax.set_yticks(y_pos)
+                if col_idx == 0:
+                    ax.set_yticklabels(features_sorted, fontsize=8)
+                else:
+                    ax.set_yticklabels([])
+                    ax.tick_params(left=False)
+                    ax.spines['left'].set_visible(False)
+
+                ax.axvline(x=0, color='gray', linestyle='-', linewidth=0.8, alpha=0.7)
+                ax.spines['top'].set_visible(False)
+                ax.spines['right'].set_visible(False)
+                ax.grid(axis='x', linestyle='--', alpha=0.3)
+
+                # Formata eixo X com vírgula
+                ax.xaxis.set_major_formatter(mticker.FuncFormatter(comma_formatter))
+
+                # Label do eixo X
+                ax.set_xlabel('Valor SHAP (m³/ha)', fontsize=9)
+
+                # Informações da amostra (em cima do gráfico)
+                vtcc_val = y_true[sample_idx]
+                pred_val = y_pred[sample_idx]
+                erro_val = erro_rel[sample_idx]
+
+                subtitle = f'Obs: {vtcc_val:.0f} m³/ha | Pred: {pred_val:.0f} m³/ha | ER: {erro_val:.1f}%'
+                subtitle = subtitle.replace('.', ',')
+                ax.text(0.5, 1.02, subtitle, transform=ax.transAxes,
+                       fontsize=8, ha='center', va='bottom')
+
+            else:
+                ax.text(0.5, 0.5, 'Sem dados', transform=ax.transAxes,
+                       ha='center', va='center', fontsize=10, color='gray')
+                ax.set_xticks([])
+                ax.set_yticks([])
+                for spine in ax.spines.values():
+                    spine.set_visible(False)
+
+            # Label do painel (fora do gráfico)
+            ax.text(0.0, 1.08, panel_labels[panel_idx], transform=ax.transAxes,
+                   fontsize=12, va='bottom', ha='left')
+
+            # Títulos das colunas (apenas linha 0)
+            if row_idx == 0:
+                ax.set_title(col_labels[col_idx], fontsize=11, pad=15)
+
+            panel_idx += 1
+
+    # Labels das linhas (à esquerda, fora da área do gráfico)
+    for row_idx, label in enumerate(row_labels):
+        axes[row_idx, 0].annotate(label, xy=(-0.45, 0.5), xycoords='axes fraction',
+                                   fontsize=11, ha='center', va='center', rotation=90)
+
+    if output_path:
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        print(f"    Gráfico salvo: {output_path.name}")
+
+    plt.show()
+
+    # Retorna informações das amostras selecionadas
+    return grid_samples
 
 
 def plot_interaction_heatmap(shap_values: np.ndarray, X: np.ndarray,
@@ -872,18 +1544,111 @@ def run_shap_analysis(
     # -------------------------------------------------------------------------
     print("[6/8] Gerando gráficos de dependência...")
 
-    # Top 3 features mais importantes
+    # Top 3 features mais importantes (gráficos simples)
     top_indices = np.argsort(np.abs(shap_values).mean(axis=0))[-3:][::-1]
 
     for idx in top_indices:
         fname = processed_features[idx]
-        safe_fname = fname.replace(' ', '_').replace('/', '_')
+        safe_fname = safe_filename(fname)
 
         plot_dependence(
             shap_values, X_sample, processed_features,
             feature_idx=idx,
             output_path=output_dir / f'SHAP_Dependence_{safe_fname}.png'
         )
+
+    # -------------------------------------------------------------------------
+    # 6.1 GRÁFICOS DE DEPENDÊNCIA COM INTERAÇÕES
+    # -------------------------------------------------------------------------
+    print("\n  Gerando gráficos de dependência com interações...")
+
+    # Define pares de interação específicos para análise
+    # Formato: (feature_principal, feature_interação, nome_descritivo)
+    interaction_pairs = [
+        ('Elev CURT mean CUBE', 'Idade (meses)', 'Z_Kurt_x_Idade'),
+        ('Elev P90', 'Idade (meses)', 'Z_P90_x_Idade'),
+        ('Elev P90', 'Regime_Alto fuste', 'Z_P90_x_Regime_Alto_fuste'),
+        ('Elev CURT mean CUBE', 'Regime_Alto fuste', 'Z_Kurt_x_Regime_Alto_fuste'),
+        ('Elev stddev', 'Idade (meses)', 'Z_stddev_x_Idade'),
+    ]
+
+    for feat_main, feat_interact, desc_name in interaction_pairs:
+        # Encontra índices das features
+        if feat_main in processed_features and feat_interact in processed_features:
+            idx_main = processed_features.index(feat_main)
+            idx_interact = processed_features.index(feat_interact)
+
+            plot_dependence(
+                shap_values, X_sample, processed_features,
+                feature_idx=idx_main,
+                interaction_idx=idx_interact,
+                output_path=output_dir / f'SHAP_Dependence_{desc_name}.png'
+            )
+        else:
+            print(f"    Aviso: Par ({feat_main}, {feat_interact}) não encontrado nas features processadas")
+
+    # -------------------------------------------------------------------------
+    # 6.2 GRÁFICOS DE DEPENDÊNCIA POR FAIXA DE IDADE
+    # -------------------------------------------------------------------------
+    print("\n  Gerando gráficos de dependência por faixa de idade...")
+
+    if 'Idade (meses)' in processed_features:
+        age_idx = processed_features.index('Idade (meses)')
+
+        # Z Kurt por faixa de idade
+        if 'Elev CURT mean CUBE' in processed_features:
+            idx_kurt = processed_features.index('Elev CURT mean CUBE')
+            plot_dependence_by_age_groups(
+                shap_values, X_sample, processed_features,
+                feature_idx=idx_kurt, age_idx=age_idx,
+                output_path=output_dir / 'SHAP_Dependence_Z_Kurt_by_Age_Groups.png'
+            )
+
+        # Z P90 por faixa de idade
+        if 'Elev P90' in processed_features:
+            idx_p90 = processed_features.index('Elev P90')
+            plot_dependence_by_age_groups(
+                shap_values, X_sample, processed_features,
+                feature_idx=idx_p90, age_idx=age_idx,
+                output_path=output_dir / 'SHAP_Dependence_Z_P90_by_Age_Groups.png'
+            )
+
+    # -------------------------------------------------------------------------
+    # 6.3 GRÁFICOS DE DEPENDÊNCIA POR REGIME DE MANEJO
+    # -------------------------------------------------------------------------
+    print("\n  Gerando gráficos de dependência por regime de manejo...")
+
+    if 'Regime_Alto fuste' in processed_features:
+        regime_idx = processed_features.index('Regime_Alto fuste')
+
+        # Z P90 por regime
+        if 'Elev P90' in processed_features:
+            idx_p90 = processed_features.index('Elev P90')
+            plot_dependence_by_regime(
+                shap_values, X_sample, processed_features,
+                feature_idx=idx_p90, regime_idx=regime_idx,
+                output_path=output_dir / 'SHAP_Dependence_Z_P90_by_Regime.png'
+            )
+
+        # Z Kurt por regime
+        if 'Elev CURT mean CUBE' in processed_features:
+            idx_kurt = processed_features.index('Elev CURT mean CUBE')
+            plot_dependence_by_regime(
+                shap_values, X_sample, processed_features,
+                feature_idx=idx_kurt, regime_idx=regime_idx,
+                output_path=output_dir / 'SHAP_Dependence_Z_Kurt_by_Regime.png'
+            )
+
+    # -------------------------------------------------------------------------
+    # 6.4 SUBPLOT 3x2: DEPENDÊNCIA SHAP (Idade e Regime x Regional)
+    # -------------------------------------------------------------------------
+    print("\n  Gerando subplot 3x2 de dependência SHAP...")
+
+    plot_shap_dependence_subplot_3x2(
+        shap_values, X_sample, processed_features,
+        output_path=output_dir / 'SHAP_Dependence_Subplot_3x2.png'
+    )
+
     print()
 
     # -------------------------------------------------------------------------
@@ -936,6 +1701,18 @@ def run_shap_analysis(
             y_pred=y_pred_sample[idx],
             output_path=output_dir / f'SHAP_Waterfall_{case_name}.png'
         )
+
+    # -------------------------------------------------------------------------
+    # 8.1 SUBPLOT 3x3: WATERFALL POR VTCC E ERRO RELATIVO
+    # -------------------------------------------------------------------------
+    print("\n  Gerando subplot 3x3 de waterfall (VTCC × Erro Relativo)...")
+
+    plot_waterfall_subplot_3x3(
+        explainer, shap_values, X_sample, processed_features,
+        y_true=y_sample, y_pred=y_pred_sample,
+        output_path=output_dir / 'SHAP_Waterfall_Subplot_3x3.png',
+        max_display=10
+    )
 
     # -------------------------------------------------------------------------
     # ANÁLISE CRÍTICA

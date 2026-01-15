@@ -1,65 +1,68 @@
 """
-08_Validation.py - Validação do Modelo por Talhão
+08_Validation.py - Validação do Modelo por Talhão (Áreas independentes + Volume)
 
-Este script realiza a validação do modelo de predição de volume florestal
-comparando os resultados preditos (média por talhão) com os valores de referência (IFPc).
+Objetivo (conforme solicitado):
+1) Consistência geométrica do clip (ÁREA)
+   - Filtrar pelo campo Flag (não vazio)
+   - Gráfico: Área CAD x Área Raster
+   - Gráfico: Resíduo de área (%) x Área Raster
 
-Workflow:
-    1. Carregamento dos dados de validação (Excel com resultados por talhão)
-    2. Cálculo de métricas estatísticas (R², RMSE, MAE, Bias, MdAPE)
-    3. Geração de gráficos diagnósticos:
-        - Observado vs Predito
-        - Análise de Resíduos
-        - Bland-Altman Plot
-        - Distribuição por Classe de Idade
-        - Análise por Área
-        - Mapa de Calor de Erros
-    4. Exportação de relatório de validação
+2) Validação volumétrica em talhões independentes (VOLUME)
+   - Filtrar Flag == "Ok" e Diffmed ∈ {-1, 0, +1}
+   - Gráfico: Estimado x Observado (1:1 + regressão + métricas)
+   - Gráfico: Estimado x Resíduo (%)
+   - Gráfico: Frequência/Distribuição de resíduos (%)
+   - Mantendo o filtro acima:
+       - Violino resíduos (%) por Regime
+       - Violino resíduos (%) por Regional
+       - Violino resíduos (%) por Regional × Regime
 
-Colunas esperadas no arquivo de entrada:
-    - TALHAO: Identificador do talhão
-    - VTCC_IFPC: Volume observado pelo IFPc (m³/ha)
-    - VTCC_PRED: Volume predito pelo modelo (m³/ha)
-    - AREA_CADASTRO: Área do cadastro florestal (ha)
-    - AREA_RASTER: Área calculada pelo raster/LiDAR (ha)
-    - IDADE_MESES: Idade do plantio em meses
-    - REGIONAL: Regional (opcional)
-    - ROTACAO: Número da rotação (opcional)
+3) Impacto do desfasamento temporal (Diffmed)
+   - Filtrar Flag == "Ok"
+   - Gráfico: Diffmed x Resíduo (%) com regressão linear (r, p, R²)
 
 Autor: Leonardo Ippolito Rodrigues
-Data: 2024
+Data: 2026
 Projeto: Mestrado - Predição de Volume Florestal com LiDAR
 """
 
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import seaborn as sns
+from matplotlib.lines import Line2D
 from pathlib import Path
 from datetime import datetime
 from scipy import stats
 from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
+from typing import Optional, Dict, List, Tuple
 
 # =============================================================================
 # CONFIGURAÇÕES GLOBAIS
 # =============================================================================
 
-# Caminhos - ALTERE CONFORME NECESSÁRIO
-INPUT_FILE = r"G:\PycharmProjects\Mestrado\Forecast\Predictive\Results\raster_stats_consolidado.xlsx"
+# Caminhos
+INPUT_FILE = r"G:\PycharmProjects\Mestrado\Forecast\Predictive\Results\ALL_RASTER_STATS_P90_CUB_STD_CLIPPED.xlsx"
 SHEET_NAME = "CONSISTIDO"
-OUTPUT_DIR = Path(r"G:\PycharmProjects\Mestrado\Forecast\Predictive\Results")
+OUTPUT_DIR = Path(r"G:\PycharmProjects\Mestrado\Forecast\Predictive\Results\Figures")
 
-# Nomes das colunas no arquivo de entrada (adapte conforme seu arquivo)
+# Nomes das colunas (adapte conforme seu arquivo)
 COL_TALHAO = 'TALHAO'
-COL_OBSERVADO = 'Prod_ifpc'        # Valor de referência (IFPc)
-COL_PREDITO = 'Mean'          # Valor predito pelo modelo
-COL_AREA_CADASTRO = 'Area_ifpc'
-COL_AREA_RASTER = 'Area_ha'
-COL_IDADE = 'Idade'
+COL_OBSERVADO = 'PROD_IFPC'      # VTCC IFPc (m3/ha)
+COL_PREDITO = 'Mean'             # VTCC W2W (m3/ha)
+COL_AREA_CAD = 'Area CAD'        # Area cadastro (ha)
+COL_AREA_RASTER = 'Area_ha'      # Area raster (ha)
+COL_IDADE = 'Idade'              # Idade em meses (opcional)
 COL_REGIONAL = 'REGIONAL'
-COL_ROTACAO = 'Regime'
+COL_REGIME = 'Regime'
+COL_DELTA_T = 'Diffmed'          # Diferença temporal IFPc-LiDAR (meses)
 
-# Configuração de estilo dos gráficos
+COL_FLAG = "Flag"
+FLAG_OK = "OK"  # será comparado após upper().strip()
+
+# =============================================================================
+# ESTILO ARTIGO
+# =============================================================================
+
 plt.rcParams.update({
     "font.family": "Times New Roman",
     "font.size": 10,
@@ -67,694 +70,754 @@ plt.rcParams.update({
     "axes.labelsize": 10,
     "xtick.labelsize": 9,
     "ytick.labelsize": 9,
+    "legend.fontsize": 9,
     "figure.dpi": 300,
-    "figure.facecolor": "white"
+    "figure.facecolor": "white",
+    "axes.spines.top": False,
+    "axes.spines.right": False,
+    "axes.grid": True,
+    "grid.alpha": 0.3,
+    "grid.linestyle": "--",
+    "grid.linewidth": 0.5,
 })
 
-# Cores
-COLOR_PRIMARY = '#1f77b4'
-COLOR_SECONDARY = '#ff7f0e'
-COLOR_ACCENT = '#2ca02c'
-COLOR_ERROR = '#d62728'
+# Paleta
+_cmap = plt.cm.YlGnBu
+
+from matplotlib.ticker import FuncFormatter
+
+def pt_br_formatter(x, pos):
+    """
+    Formata número com vírgula decimal (pt-BR).
+    Ex: 1.23 -> 1,23
+    """
+    return f"{x:.1f}".replace(".", ",")
+
+def pt_br_smart(x, pos):
+    if abs(x - int(x)) < 1e-6:
+        return f"{int(x)}"
+    return f"{x:.1f}".replace(".", ",")
+
+def get_regional_colors(regions: List[str]) -> Dict[str, tuple]:
+    """Gera cores para cada regional usando YlGnBu."""
+    regions = [str(r) for r in regions]
+    n = len(regions)
+    if n <= 1:
+        return {regions[0]: _cmap(0.6)} if n == 1 else {}
+    return {r: _cmap(0.25 + 0.6 * i / (n - 1)) for i, r in enumerate(sorted(set(regions)))}
 
 
 # =============================================================================
-# FUNÇÕES DE MÉTRICAS
+# FUNÇÕES AUXILIARES
 # =============================================================================
 
-def calculate_validation_metrics(y_obs, y_pred):
+def lowess_smooth(x: np.ndarray, y: np.ndarray, frac: float = 0.3,
+                  num_points: int = 100) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Calcula métricas de validação completas.
-
-    Parameters
-    ----------
-    y_obs : array-like
-        Valores observados (referência IFPc).
-    y_pred : array-like
-        Valores preditos pelo modelo.
-
-    Returns
-    -------
-    dict
-        Dicionário com métricas calculadas.
+    Implementação simples de LOWESS (Locally Weighted Scatterplot Smoothing).
     """
-    y_obs = np.array(y_obs)
-    y_pred = np.array(y_pred)
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
 
-    # Métricas básicas
+    mask = np.isfinite(x) & np.isfinite(y)
+    x = x[mask]
+    y = y[mask]
+
+    if len(x) < 5:
+        return x, y
+
+    sort_idx = np.argsort(x)
+    x_sorted = x[sort_idx]
+    y_sorted = y[sort_idx]
+
+    x_eval = np.linspace(x_sorted.min(), x_sorted.max(), num_points)
+    y_eval = np.zeros(num_points)
+
+    n = len(x_sorted)
+    k = int(np.ceil(frac * n))
+    k = max(3, min(k, n))
+
+    for i, xi in enumerate(x_eval):
+        distances = np.abs(x_sorted - xi)
+        idx = np.argsort(distances)[:k]
+        x_local = x_sorted[idx]
+        y_local = y_sorted[idx]
+        d_local = distances[idx]
+
+        d_max = d_local.max() * 1.001 if d_local.max() > 0 else 1.0
+        weights = (1 - (d_local / d_max) ** 3) ** 3
+
+        W = np.diag(weights)
+        X = np.column_stack([np.ones(k), x_local])
+
+        try:
+            beta = np.linalg.lstsq(X.T @ W @ X, X.T @ W @ y_local, rcond=None)[0]
+            y_eval[i] = beta[0] + beta[1] * xi
+        except Exception:
+            y_eval[i] = np.average(y_local, weights=weights)
+
+    return x_eval, y_eval
+
+
+def calculate_metrics(y_obs: np.ndarray, y_pred: np.ndarray, min_obs: float = 1e-6) -> Dict:
+    """
+    Métricas de validação.
+    IMPORTANTE: R² aqui é o R² da regressão linear (y_pred ~ y_obs),
+    igual ao exibido no gráfico (linha ajustada).
+    """
+    y_obs = np.asarray(y_obs, dtype=float)
+    y_pred = np.asarray(y_pred, dtype=float)
+
+    mask = np.isfinite(y_obs) & np.isfinite(y_pred) & (y_obs > min_obs)
+    y_obs = y_obs[mask]
+    y_pred = y_pred[mask]
+
     n = len(y_obs)
-    y_mean = np.mean(y_obs)
-    residuals = y_obs - y_pred
+    y_mean = np.mean(y_obs) if n else np.nan
 
-    # R²
-    r2 = r2_score(y_obs, y_pred)
+    # R² da regressão (igual ao plot)
+    if n >= 3:
+        slope, intercept, r, p, _ = stats.linregress(y_obs, y_pred)
+        y_hat = slope * y_obs + intercept
+        r2 = r2_score(y_pred, y_hat)  # R² da regressão (equivale ao r² em regressão simples)
+    else:
+        slope = intercept = r = p = np.nan
+        r2 = np.nan
 
-    # RMSE
-    rmse = np.sqrt(mean_squared_error(y_obs, y_pred))
-    rmse_pct = (rmse / y_mean) * 100
-
-    # MAE
-    mae = mean_absolute_error(y_obs, y_pred)
-    mae_pct = (mae / y_mean) * 100
-
-    # Bias (viés médio)
-    bias = np.mean(y_pred - y_obs)
-    bias_pct = (bias / y_mean) * 100
-
-    # MdAPE (Median Absolute Percentage Error)
-    ape = np.abs((y_obs - y_pred) / y_obs) * 100
-    mdape = np.median(ape)
-
-    # MAPE
-    mape = np.mean(ape)
-
-    # Correlação de Pearson
-    pearson_r, pearson_p = stats.pearsonr(y_obs, y_pred)
-
-    # Correlação de Spearman
-    spearman_r, spearman_p = stats.spearmanr(y_obs, y_pred)
-
-    # Índice de concordância de Willmott (d)
-    ss_pred = np.sum((y_pred - y_mean) ** 2)
-    ss_obs = np.sum((y_obs - y_mean) ** 2)
-    willmott_d = 1 - (np.sum(residuals ** 2) /
-                      np.sum((np.abs(y_pred - y_mean) + np.abs(y_obs - y_mean)) ** 2))
-
-    # Coeficiente de Eficiência de Nash-Sutcliffe (NSE)
-    nse = 1 - (np.sum(residuals ** 2) / np.sum((y_obs - y_mean) ** 2))
+    rmse = np.sqrt(mean_squared_error(y_obs, y_pred)) if n else np.nan
+    rmse_pct = (rmse / y_mean) * 100 if n and y_mean != 0 else np.nan
+    mae = mean_absolute_error(y_obs, y_pred) if n else np.nan
+    mae_pct = (mae / y_mean) * 100 if n and y_mean != 0 else np.nan
+    bias = np.mean(y_pred - y_obs) if n else np.nan
+    bias_pct = (bias / y_mean) * 100 if n and y_mean != 0 else np.nan
 
     return {
         'N': n,
-        'Media_Obs': y_mean,
-        'Media_Pred': np.mean(y_pred),
         'R2': r2,
+        'Slope': slope,
+        'Intercept': intercept,
+        'r': r,
+        'p': p,
         'RMSE': rmse,
         'RMSE_pct': rmse_pct,
         'MAE': mae,
         'MAE_pct': mae_pct,
         'Bias': bias,
         'Bias_pct': bias_pct,
-        'MAPE': mape,
-        'MdAPE': mdape,
-        'Pearson_r': pearson_r,
-        'Pearson_p': pearson_p,
-        'Spearman_r': spearman_r,
-        'Spearman_p': spearman_p,
-        'Willmott_d': willmott_d,
-        'NSE': nse
+    }
+
+def calculate_temporal_regression_metrics(df: pd.DataFrame) -> Dict:
+    """
+    Métricas da regressão Diffmed (x) vs resíduo % (y).
+    Igual ao figC1_diffmed_vs_resid_linear.
+    """
+    resid_pct = compute_residuals_pct(df, COL_OBSERVADO, COL_PREDITO).values
+    x = pd.to_numeric(df[COL_DELTA_T], errors="coerce").values
+    y = pd.to_numeric(resid_pct, errors="coerce")
+
+    mask = np.isfinite(x) & np.isfinite(y)
+    x = x[mask]
+    y = y[mask]
+
+    if len(x) < 3:
+        return {"N": len(x), "R2": np.nan, "slope": np.nan, "intercept": np.nan, "r": np.nan, "p": np.nan}
+
+    slope, intercept, r, p, _ = stats.linregress(x, y)
+    return {"N": len(x), "R2": r**2, "slope": slope, "intercept": intercept, "r": r, "p": p}
+
+
+def save_figure(fig, output_dir: Path, filename: str):
+    """Salva figura em PNG e PDF."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    png_path = output_dir / f"{filename}.png"
+    fig.savefig(png_path, dpi=300, bbox_inches='tight', facecolor='white')
+
+    pdf_path = output_dir / f"{filename}.pdf"
+    fig.savefig(pdf_path, format='pdf', bbox_inches='tight', facecolor='white')
+
+    print(f"  Salvo: {filename}.png / {filename}.pdf")
+    plt.close(fig)
+
+
+def compute_residuals_pct(df: pd.DataFrame, col_obs: str, col_pred: str) -> pd.Series:
+    """Resíduo relativo (%) = (pred - obs) / obs * 100"""
+    obs = pd.to_numeric(df[col_obs], errors="coerce")
+    pred = pd.to_numeric(df[col_pred], errors="coerce")
+    resid = (pred - obs) / obs * 100
+    resid = resid.replace([np.inf, -np.inf], np.nan)
+    return resid
+
+
+def linear_fit_with_stats(x: np.ndarray, y: np.ndarray) -> Dict:
+    """Regressão linear simples e estatísticas."""
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    mask = np.isfinite(x) & np.isfinite(y)
+    x = x[mask]
+    y = y[mask]
+
+    if len(x) < 3:
+        return {"ok": False}
+
+    slope, intercept, r, p, _ = stats.linregress(x, y)
+    y_hat = slope * x + intercept
+    r2 = r2_score(y, y_hat) if len(x) > 2 else np.nan
+
+    return {
+        "ok": True,
+        "slope": slope,
+        "intercept": intercept,
+        "r": r,
+        "p": p,
+        "r2": r2
     }
 
 
 # =============================================================================
-# FUNÇÕES DE GRÁFICOS
+# FIGURAS - BLOCO A (ÁREA / CLIP)
 # =============================================================================
 
-def plot_observed_vs_predicted(y_obs, y_pred, metrics, ax=None, title=''):
-    """
-    Gráfico de dispersão: Observado vs Predito.
-    """
-    if ax is None:
-        fig, ax = plt.subplots(figsize=(6, 6))
+def figA1_area_cad_vs_area_raster(df: pd.DataFrame, output_dir: Path):
+    """Área CAD × Área Raster (1:1)"""
+    fig, ax = plt.subplots(figsize=(7, 6))
 
-    ax.scatter(y_obs, y_pred, alpha=0.6, s=40, c=COLOR_PRIMARY,
-               edgecolors='white', linewidth=0.5)
+    x = pd.to_numeric(df[COL_AREA_CAD], errors="coerce").values
+    y = pd.to_numeric(df[COL_AREA_RASTER], errors="coerce").values
+    mask = np.isfinite(x) & np.isfinite(y)
+    x = x[mask]
+    y = y[mask]
 
-    # Linha 1:1
-    lim_min = 0
-    lim_max = max(max(y_obs), max(y_pred)) * 1.05
-    ax.plot([lim_min, lim_max], [lim_min, lim_max], 'r--', linewidth=1.5, label='Linha 1:1')
-
-    # Linha de regressão
-    z = np.polyfit(y_obs, y_pred, 1)
-    p = np.poly1d(z)
-    x_line = np.linspace(min(y_obs), max(y_obs), 100)
-    ax.plot(x_line, p(x_line), '--', color=COLOR_SECONDARY, linewidth=1.5,
-            label=f'Regressão (y = {z[0]:.2f}x + {z[1]:.2f})')
-
-    # Anotação com métricas
-    textstr = (f"N = {metrics['N']}\n"
-               f"R² = {metrics['R2']:.4f}\n"
-               f"RMSE = {metrics['RMSE']:.2f} m³/ha ({metrics['RMSE_pct']:.1f}%)\n"
-               f"Bias = {metrics['Bias']:.2f} m³/ha ({metrics['Bias_pct']:.1f}%)")
-    ax.text(0.05, 0.95, textstr, transform=ax.transAxes, fontsize=9,
-            verticalalignment='top', bbox=dict(boxstyle='round', facecolor='white', alpha=0.9))
-
-    ax.set_xlabel('VTCC Observado - IFPc (m³/ha)')
-    ax.set_ylabel('VTCC Predito - LiDAR (m³/ha)')
-    ax.set_xlim(lim_min, lim_max)
-    ax.set_ylim(lim_min, lim_max)
-    ax.set_aspect('equal')
-    ax.grid(linestyle='--', alpha=0.3)
-    ax.legend(loc='lower right', fontsize=8)
-    if title:
-        ax.set_title(title)
-
-    return ax
-
-
-def plot_residuals_vs_predicted(y_obs, y_pred, ax=None, relative=True):
-    """
-    Gráfico de resíduos vs valores preditos.
-    """
-    if ax is None:
-        fig, ax = plt.subplots(figsize=(6, 5))
-
-    if relative:
-        residuals = ((y_pred - y_obs) / y_obs) * 100
-        ylabel = 'Resíduos Relativos (%)'
-        ylim = (-100, 100)
+    # Tamanho por área CAD
+    if len(x) and np.nanmax(x) > np.nanmin(x):
+        sizes = 25 + (x - np.nanmin(x)) / (np.nanmax(x) - np.nanmin(x)) * 80
     else:
-        residuals = y_pred - y_obs
-        ylabel = 'Resíduos (m³/ha)'
-        ylim = None
+        sizes = 40
 
-    ax.scatter(y_pred, residuals, alpha=0.6, s=40, c=COLOR_PRIMARY,
-               edgecolors='white', linewidth=0.5)
-    ax.axhline(y=0, color='red', linestyle='--', linewidth=1.5)
+    ax.scatter(x, y, c='#555555', s=sizes, alpha=0.65, edgecolors='white', linewidth=0.5)
 
-    if relative:
-        ax.axhline(y=20, color='gray', linestyle=':', linewidth=1, alpha=0.7)
-        ax.axhline(y=-20, color='gray', linestyle=':', linewidth=1, alpha=0.7)
-        ax.fill_between([min(y_pred)*0.95, max(y_pred)*1.05], -20, 20,
-                        alpha=0.1, color='green')
+    lim_max = max(np.nanmax(x), np.nanmax(y)) * 1.05 if len(x) else 1
+    ax.plot([0, lim_max], [0, lim_max], linestyle='--', c='black', linewidth=1.5)
 
-    ax.set_xlabel('VTCC Predito (m³/ha)')
-    ax.set_ylabel(ylabel)
-    if ylim:
-        ax.set_ylim(ylim)
-    ax.grid(linestyle='--', alpha=0.3)
-
-    return ax
-
-
-def plot_residuals_histogram(y_obs, y_pred, ax=None, relative=True):
-    """
-    Histograma de distribuição dos resíduos.
-    """
-    if ax is None:
-        fig, ax = plt.subplots(figsize=(6, 5))
-
-    if relative:
-        residuals = ((y_obs - y_pred) / y_obs) * 100
-        xlabel = 'Resíduos Relativos (%)'
-        bins = np.arange(-100, 105, 10)
-    else:
-        residuals = y_obs - y_pred
-        xlabel = 'Resíduos (m³/ha)'
-        bins = 20
-
-    ax.hist(residuals, bins=bins, alpha=0.7, color=COLOR_PRIMARY,
-            edgecolor='white', linewidth=0.8, density=True)
-    ax.axvline(x=0, color='red', linestyle='--', linewidth=1.5)
-    ax.axvline(x=np.mean(residuals), color=COLOR_SECONDARY, linestyle='-',
-               linewidth=1.5, label=f'Média: {np.mean(residuals):.1f}')
-    ax.axvline(x=np.median(residuals), color=COLOR_ACCENT, linestyle='-.',
-               linewidth=1.5, label=f'Mediana: {np.median(residuals):.1f}')
-
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel('Densidade')
-    ax.legend(fontsize=8)
-    ax.grid(linestyle='--', alpha=0.3)
-
-    return ax
-
-
-def plot_bland_altman(y_obs, y_pred, ax=None):
-    """
-    Gráfico de Bland-Altman (diferença vs média).
-    """
-    if ax is None:
-        fig, ax = plt.subplots(figsize=(6, 5))
-
-    mean_values = (y_obs + y_pred) / 2
-    diff_values = y_obs - y_pred
-
-    mean_diff = np.mean(diff_values)
-    std_diff = np.std(diff_values)
-
-    ax.scatter(mean_values, diff_values, alpha=0.6, s=40, c=COLOR_PRIMARY,
-               edgecolors='white', linewidth=0.5)
-
-    # Linhas de referência
-    ax.axhline(y=mean_diff, color='red', linestyle='-', linewidth=1.5,
-               label=f'Bias: {mean_diff:.2f}')
-    ax.axhline(y=mean_diff + 1.96*std_diff, color='gray', linestyle='--',
-               linewidth=1.5, label=f'+1.96 SD: {mean_diff + 1.96*std_diff:.2f}')
-    ax.axhline(y=mean_diff - 1.96*std_diff, color='gray', linestyle='--',
-               linewidth=1.5, label=f'-1.96 SD: {mean_diff - 1.96*std_diff:.2f}')
-
-    # Área de concordância
-    ax.fill_between([min(mean_values)*0.95, max(mean_values)*1.05],
-                    mean_diff - 1.96*std_diff, mean_diff + 1.96*std_diff,
-                    alpha=0.1, color='gray')
-
-    ax.set_xlabel('Média (Obs + Pred) / 2 (m³/ha)')
-    ax.set_ylabel('Diferença (Obs - Pred) (m³/ha)')
-    ax.legend(loc='upper right', fontsize=8)
-    ax.grid(linestyle='--', alpha=0.3)
-    ax.set_title('Bland-Altman Plot')
-
-    return ax
-
-
-def plot_by_age_class(df, col_obs, col_pred, col_idade, ax=None):
-    """
-    Boxplot de erro por classe de idade.
-    """
-    if ax is None:
-        fig, ax = plt.subplots(figsize=(8, 5))
-
-    df = df.copy()
-    df['erro_pct'] = ((df[col_obs] - df[col_pred]) / df[col_obs]) * 100
-
-    # Criar classes de idade (em anos)
-    df['idade_anos'] = df[col_idade] / 12
-    bins = [0, 2, 3, 4, 5, 6, 7, 8, 100]
-    labels = ['<2', '2-3', '3-4', '4-5', '5-6', '6-7', '7-8', '>8']
-    df['classe_idade'] = pd.cut(df['idade_anos'], bins=bins, labels=labels, right=False)
-
-    # Boxplot
-    order = [l for l in labels if l in df['classe_idade'].unique()]
-    sns.boxplot(data=df, x='classe_idade', y='erro_pct', ax=ax,
-                color=COLOR_PRIMARY, order=order)
-
-    ax.axhline(y=0, color='red', linestyle='--', linewidth=1.5)
-    ax.axhline(y=20, color='gray', linestyle=':', linewidth=1, alpha=0.7)
-    ax.axhline(y=-20, color='gray', linestyle=':', linewidth=1, alpha=0.7)
-
-    ax.set_xlabel('Classe de Idade (anos)')
-    ax.set_ylabel('Erro Relativo (%)')
-    ax.set_title('Distribuição do Erro por Classe de Idade')
-    ax.grid(linestyle='--', alpha=0.3, axis='y')
-
-    return ax
-
-
-def plot_by_area_scatter(df, col_obs, col_pred, col_area, ax=None, area_type='Cadastro'):
-    """
-    Gráfico de dispersão do erro por área do talhão.
-    """
-    if ax is None:
-        fig, ax = plt.subplots(figsize=(6, 5))
-
-    df = df.copy()
-    df['erro_pct'] = ((df[col_obs] - df[col_pred]) / df[col_obs]) * 100
-
-    scatter = ax.scatter(df[col_area], df['erro_pct'], alpha=0.6, s=40,
-                         c=COLOR_PRIMARY, edgecolors='white', linewidth=0.5)
-
-    ax.axhline(y=0, color='red', linestyle='--', linewidth=1.5)
-    ax.axhline(y=20, color='gray', linestyle=':', linewidth=1, alpha=0.7)
-    ax.axhline(y=-20, color='gray', linestyle=':', linewidth=1, alpha=0.7)
-
-    # Adicionar linha de tendência
-    z = np.polyfit(df[col_area], df['erro_pct'], 1)
-    p = np.poly1d(z)
-    x_line = np.linspace(df[col_area].min(), df[col_area].max(), 100)
-    ax.plot(x_line, p(x_line), '--', color=COLOR_SECONDARY, linewidth=1.5)
-
-    ax.set_xlabel(f'Área {area_type} (ha)')
-    ax.set_ylabel('Erro Relativo (%)')
-    ax.set_title(f'Erro vs Área do Talhão ({area_type})')
-    ax.grid(linestyle='--', alpha=0.3)
-
-    return ax
-
-
-def plot_area_comparison(df, col_area_cad, col_area_raster, ax=None):
-    """
-    Comparação entre área do cadastro e área do raster.
-    """
-    if ax is None:
-        fig, ax = plt.subplots(figsize=(6, 6))
-
-    ax.scatter(df[col_area_cad], df[col_area_raster], alpha=0.6, s=40,
-               c=COLOR_PRIMARY, edgecolors='white', linewidth=0.5)
-
-    # Linha 1:1
-    lim_min = 0
-    lim_max = max(df[col_area_cad].max(), df[col_area_raster].max()) * 1.05
-    ax.plot([lim_min, lim_max], [lim_min, lim_max], 'r--', linewidth=1.5, label='Linha 1:1')
-
-    # Métricas
-    r2 = r2_score(df[col_area_cad], df[col_area_raster])
-    diff_pct = ((df[col_area_raster] - df[col_area_cad]) / df[col_area_cad] * 100).mean()
-
-    textstr = f"R² = {r2:.4f}\nDif. Média = {diff_pct:.1f}%"
-    ax.text(0.05, 0.95, textstr, transform=ax.transAxes, fontsize=9,
-            verticalalignment='top', bbox=dict(boxstyle='round', facecolor='white', alpha=0.9))
 
     ax.set_xlabel('Área Cadastro (ha)')
     ax.set_ylabel('Área Raster (ha)')
-    ax.set_xlim(lim_min, lim_max)
-    ax.set_ylim(lim_min, lim_max)
+    ax.set_xlim(0, lim_max)
+    ax.set_ylim(0, lim_max)
+    ax.set_aspect('equal')
+
+    save_figure(fig, output_dir, 'FIG_A1_area_cadastro_vs_area_raster')
+
+
+def figA2_resid_area_pct_vs_area_raster(df: pd.DataFrame, output_dir: Path):
+    """Resíduo de área (%) × Área Raster (ha)"""
+    fig, ax = plt.subplots(figsize=(7, 5))
+
+    area_cad = pd.to_numeric(df[COL_AREA_CAD], errors="coerce").values
+    area_r = pd.to_numeric(df[COL_AREA_RASTER], errors="coerce").values
+    mask = np.isfinite(area_cad) & np.isfinite(area_r) & (area_cad != 0)
+    area_cad = area_cad[mask]
+    area_r = area_r[mask]
+
+    resid_area_pct = (area_r - area_cad) / area_cad * 100
+
+    ax.scatter(area_r, resid_area_pct, c='#555555', s=40, alpha=0.55,
+               edgecolors='white', linewidth=0.5)
+
+    ax.axhline(0, color='black', linestyle='--', linewidth=1.5)
+
+    # === FORMATADOR PT-BR ===
+    formatter = FuncFormatter(lambda x, pos: f"{x:.1f}".replace(".", ","))
+    ax.xaxis.set_major_formatter(FuncFormatter(pt_br_smart))
+    ax.yaxis.set_major_formatter(FuncFormatter(pt_br_smart))
+
+    ax.set_xlabel('Área Raster (ha)')
+    ax.set_ylabel('Resíduos (%)')
+    ax.set_ylim(-10, 10)
+
+    save_figure(fig, output_dir, 'FIG_A2_resid_area_pct_vs_area_raster')
+
+
+# =============================================================================
+# FIGURAS - BLOCO B (VOLUME - OK + Diffmed ∈ {-1,0,+1})
+# =============================================================================
+
+def figB1_estimado_vs_observado(df: pd.DataFrame, output_dir: Path):
+    """Estimado (W2W) × Observado (IFPc): 1:1 + regressão + métricas"""
+    fig, ax = plt.subplots(figsize=(7, 6))
+
+    x = pd.to_numeric(df[COL_OBSERVADO], errors="coerce").values
+    y = pd.to_numeric(df[COL_PREDITO], errors="coerce").values
+    mask = np.isfinite(x) & np.isfinite(y)
+    x = x[mask]
+    y = y[mask]
+
+    ax.scatter(x, y, c=_cmap(0.6), s=40, alpha=0.6,
+               edgecolors='white', linewidth=0.5)
+
+    lim_max = max(np.nanmax(x), np.nanmax(y)) * 1.05 if len(x) else 1
+    ax.plot([0, lim_max], [0, lim_max], 'r--', linewidth=1.5, label='1:1')
+
+    fit = linear_fit_with_stats(x, y)
+    if fit.get("ok"):
+        x_line = np.linspace(np.nanmin(x), np.nanmax(x), 100)
+        y_line = fit["slope"] * x_line + fit["intercept"]
+        ax.plot(x_line, y_line, '-', color=_cmap(0.85), linewidth=1.8,
+                label=f"Regressão: y={fit['slope']:.2f}x{fit['intercept']:+.2f} (R²={fit['r2']:.3f})")
+
+    metrics = calculate_metrics(x, y)
+    textstr = (f"N = {metrics['N']}\n"
+               f"R² = {metrics['R2']:.4f}\n"
+               f"RMSE = {metrics['RMSE']:.2f} m³/ha ({metrics['RMSE_pct']:.1f}%)\n"
+               f"MAE = {metrics['MAE']:.2f} m³/ha ({metrics['MAE_pct']:.1f}%)\n"
+               f"Bias = {metrics['Bias']:+.2f} m³/ha ({metrics['Bias_pct']:+.1f}%)")
+    ax.text(0.05, 0.95, textstr, transform=ax.transAxes, fontsize=9,
+            va='top', bbox=dict(boxstyle='round', facecolor='white', alpha=0.9))
+
+    ax.set_xlabel('VTCC Observado – IFPc (m³/ha)')
+    ax.set_ylabel('VTCC Estimado – W2W (m³/ha)')
+    ax.set_xlim(0, lim_max)
+    ax.set_ylim(0, lim_max)
     ax.set_aspect('equal')
     ax.legend(loc='lower right', fontsize=8)
-    ax.set_title('Comparação de Áreas')
-    ax.grid(linestyle='--', alpha=0.3)
 
-    return ax
+    save_figure(fig, output_dir, 'FIG_B1_estimado_vs_observado_1to1')
 
 
-def plot_error_heatmap(df, col_obs, col_pred, col_idade, col_area, ax=None):
-    """
-    Mapa de calor do erro por idade e área.
-    """
-    if ax is None:
-        fig, ax = plt.subplots(figsize=(8, 6))
+def figB2_estimado_vs_residuo(df: pd.DataFrame, output_dir: Path):
+    """Estimado (W2W) × Resíduo (%)"""
+    fig, ax = plt.subplots(figsize=(7, 5))
 
-    df = df.copy()
-    df['erro_abs_pct'] = np.abs((df[col_obs] - df[col_pred]) / df[col_obs]) * 100
+    est = pd.to_numeric(df[COL_PREDITO], errors="coerce").values
+    resid_pct = compute_residuals_pct(df, COL_OBSERVADO, COL_PREDITO).values
 
-    # Criar classes
-    df['idade_anos'] = df[col_idade] / 12
-    df['classe_idade'] = pd.cut(df['idade_anos'],
-                                 bins=[0, 3, 5, 7, 100],
-                                 labels=['<3', '3-5', '5-7', '>7'])
-    df['classe_area'] = pd.cut(df[col_area],
-                                bins=[0, 5, 10, 20, 1000],
-                                labels=['<5', '5-10', '10-20', '>20'])
+    mask = np.isfinite(est) & np.isfinite(resid_pct)
+    est = est[mask]
+    resid_pct = resid_pct[mask]
 
-    # Pivot table
-    pivot = df.pivot_table(values='erro_abs_pct',
-                           index='classe_idade',
-                           columns='classe_area',
-                           aggfunc='mean')
+    ax.scatter(est, resid_pct, c=_cmap(0.6), s=40, alpha=0.55,
+               edgecolors='white', linewidth=0.5)
 
-    sns.heatmap(pivot, annot=True, fmt='.1f', cmap='RdYlGn_r',
-                ax=ax, cbar_kws={'label': 'Erro Abs. Médio (%)'})
+    xs, ys = lowess_smooth(est, resid_pct, frac=0.4)
+    if len(xs) > 1:
+        ax.plot(xs, ys, '-', color=_cmap(0.85), linewidth=2, label='LOWESS')
 
-    ax.set_xlabel('Classe de Área (ha)')
-    ax.set_ylabel('Classe de Idade (anos)')
-    ax.set_title('Erro Absoluto Médio (%) por Idade e Área')
+    ax.axhline(0, color='red', linestyle='--', linewidth=1.5)
+    ax.axhline(20, color='gray', linestyle=':', linewidth=1, alpha=0.7)
+    ax.axhline(-20, color='gray', linestyle=':', linewidth=1, alpha=0.7)
 
-    return ax
+    ax.set_xlabel('VTCC Estimado – W2W (m³/ha)')
+    ax.set_ylabel('Resíduo Relativo (%)')
+    ax.legend(loc='upper right', fontsize=8)
+
+    save_figure(fig, output_dir, 'FIG_B2_estimado_vs_resid_pct')
 
 
-def plot_qq_residuals(y_obs, y_pred, ax=None):
-    """
-    Q-Q Plot dos resíduos.
-    """
-    if ax is None:
-        fig, ax = plt.subplots(figsize=(5, 5))
+def figB3_frequencia_residuos(df: pd.DataFrame, output_dir: Path):
+    """Frequência/Distribuição de resíduos (%)"""
+    fig, ax = plt.subplots(figsize=(7, 5))
 
-    residuals = y_obs - y_pred
-    stats.probplot(residuals, dist="norm", plot=ax)
-    ax.set_title('Q-Q Plot dos Resíduos')
-    ax.grid(linestyle='--', alpha=0.3)
+    resid_pct = compute_residuals_pct(df, COL_OBSERVADO, COL_PREDITO).values
+    resid_pct = resid_pct[np.isfinite(resid_pct)]
 
-    return ax
+    bins = np.arange(-60, 65, 5)
+    ax.hist(resid_pct, bins=bins, alpha=0.75, color=_cmap(0.6),
+            edgecolor='white', linewidth=0.8)
 
+    ax.axvline(0, color='red', linestyle='--', linewidth=1.5)
 
-def plot_cumulative_distribution(y_obs, y_pred, ax=None):
-    """
-    Distribuição cumulativa dos erros absolutos.
-    """
-    if ax is None:
-        fig, ax = plt.subplots(figsize=(6, 5))
-
-    error_pct = np.abs((y_obs - y_pred) / y_obs) * 100
-    error_sorted = np.sort(error_pct)
-    cdf = np.arange(1, len(error_sorted) + 1) / len(error_sorted) * 100
-
-    ax.plot(error_sorted, cdf, color=COLOR_PRIMARY, linewidth=2)
-    ax.axvline(x=10, color='green', linestyle='--', linewidth=1.5, alpha=0.7, label='10%')
-    ax.axvline(x=20, color='orange', linestyle='--', linewidth=1.5, alpha=0.7, label='20%')
-    ax.axvline(x=30, color='red', linestyle='--', linewidth=1.5, alpha=0.7, label='30%')
-
-    # Calcular percentuais
-    pct_10 = np.sum(error_pct <= 10) / len(error_pct) * 100
-    pct_20 = np.sum(error_pct <= 20) / len(error_pct) * 100
-    pct_30 = np.sum(error_pct <= 30) / len(error_pct) * 100
-
-    textstr = f"{pct_10:.1f}% < 10%\n{pct_20:.1f}% < 20%\n{pct_30:.1f}% < 30%"
-    ax.text(0.95, 0.05, textstr, transform=ax.transAxes, fontsize=9,
-            verticalalignment='bottom', horizontalalignment='right',
+    text = (f"N = {len(resid_pct)}\n"
+            f"Média = {np.mean(resid_pct):+.1f}%\n"
+            f"Mediana = {np.median(resid_pct):+.1f}%\n"
+            f"Desvio = {np.std(resid_pct):.1f}%\n"
+            f"|Res| < 20%: {np.mean(np.abs(resid_pct) < 20)*100:.1f}%")
+    ax.text(0.02, 0.98, text, transform=ax.transAxes, va='top', fontsize=9,
             bbox=dict(boxstyle='round', facecolor='white', alpha=0.9))
 
-    ax.set_xlabel('Erro Absoluto (%)')
-    ax.set_ylabel('Frequência Acumulada (%)')
-    ax.set_title('Distribuição Cumulativa dos Erros')
-    ax.set_xlim(0, max(error_sorted) * 1.05)
-    ax.set_ylim(0, 105)
-    ax.legend(loc='center right', fontsize=8)
-    ax.grid(linestyle='--', alpha=0.3)
+    ax.set_xlabel('Resíduo Relativo (%)')
+    ax.set_ylabel('Frequência')
 
-    return ax
+    save_figure(fig, output_dir, 'FIG_B3_freq_residuos')
+
+
+def violin_resid_by_group(df: pd.DataFrame, output_dir: Path, group_col: str,
+                          filename: str, title: str):
+    """Violino de resíduos (%) por uma coluna categórica."""
+    if group_col not in df.columns:
+        print(f"  [SKIP] {filename}: coluna {group_col} não encontrada")
+        return
+
+    dfp = df.copy()
+    dfp["resid_pct"] = compute_residuals_pct(dfp, COL_OBSERVADO, COL_PREDITO)
+
+    dfp = dfp.dropna(subset=["resid_pct", group_col])
+    dfp[group_col] = dfp[group_col].astype(str)
+
+    # ordem por mediana
+    order = dfp.groupby(group_col)["resid_pct"].median().sort_values().index.tolist()
+    data = [dfp[dfp[group_col] == g]["resid_pct"].values for g in order]
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    parts = ax.violinplot(data, showmeans=False, showmedians=True, showextrema=False)
+
+    for i, pc in enumerate(parts["bodies"]):
+        pc.set_facecolor(_cmap(0.35 + 0.5 * i / max(1, len(order) - 1)))
+        pc.set_alpha(0.75)
+        pc.set_edgecolor("white")
+        pc.set_linewidth(0.6)
+
+    parts["cmedians"].set_color("black")
+    parts["cmedians"].set_linewidth(1.4)
+
+    ax.axhline(0, color="red", linestyle="--", linewidth=1.5)
+    ax.axhline(20, color='gray', linestyle=':', linewidth=1, alpha=0.7)
+    ax.axhline(-20, color='gray', linestyle=':', linewidth=1, alpha=0.7)
+
+    ax.set_xticks(range(1, len(order) + 1))
+    ax.set_xticklabels([f"{g}\n(n={len(d)})" for g, d in zip(order, data)], fontsize=8)
+    ax.set_xlabel(group_col)
+    ax.set_ylabel("Resíduo Relativo (%)")
+    ax.set_title(title)
+
+    save_figure(fig, output_dir, filename)
+
+
+def violin_resid_regional_x_regime(df: pd.DataFrame, output_dir: Path):
+    """Violino resíduos (%) por Regional × Regime (grupos combinados)."""
+    if COL_REGIONAL not in df.columns or COL_REGIME not in df.columns:
+        print("  [SKIP] FIG_B6: regional/regime não encontrado")
+        return
+
+    dfp = df.copy()
+    dfp["resid_pct"] = compute_residuals_pct(dfp, COL_OBSERVADO, COL_PREDITO)
+    dfp = dfp.dropna(subset=["resid_pct", COL_REGIONAL, COL_REGIME])
+
+    dfp["grp"] = dfp[COL_REGIONAL].astype(str) + " | " + dfp[COL_REGIME].astype(str)
+
+    order = dfp.groupby("grp")["resid_pct"].median().sort_values().index.tolist()
+    data = [dfp[dfp["grp"] == g]["resid_pct"].values for g in order]
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    parts = ax.violinplot(data, showmeans=False, showmedians=True, showextrema=False)
+
+    for i, pc in enumerate(parts["bodies"]):
+        pc.set_facecolor(_cmap(0.25 + 0.6 * i / max(1, len(order) - 1)))
+        pc.set_alpha(0.75)
+        pc.set_edgecolor("white")
+        pc.set_linewidth(0.6)
+
+    parts["cmedians"].set_color("black")
+    parts["cmedians"].set_linewidth(1.4)
+
+    ax.axhline(0, color="red", linestyle="--", linewidth=1.5)
+    ax.axhline(20, color='gray', linestyle=':', linewidth=1, alpha=0.7)
+    ax.axhline(-20, color='gray', linestyle=':', linewidth=1, alpha=0.7)
+
+    ax.set_xticks(range(1, len(order) + 1))
+    ax.set_xticklabels([f"{g}\n(n={len(d)})" for g, d in zip(order, data)],
+                       fontsize=7, rotation=30, ha="right")
+    ax.set_xlabel("Regional | Regime")
+    ax.set_ylabel("Resíduo Relativo (%)")
+    ax.set_title("Resíduo (%) por Regional × Regime (violino)")
+
+    save_figure(fig, output_dir, "FIG_B6_violin_resid_regional_x_regime")
+
+
+# =============================================================================
+# FIGURAS - BLOCO C (Diffmed × resíduo - OK + regressão linear)
+# =============================================================================
+
+def figC1_diffmed_vs_resid_linear(df: pd.DataFrame, output_dir: Path):
+    """Diffmed × Resíduo (%) com regressão linear (Flag OK)."""
+    if COL_DELTA_T not in df.columns:
+        print(f"  [SKIP] FIG_C1: coluna {COL_DELTA_T} não encontrada")
+        return
+
+    dfp = df.copy()
+    dfp["resid_pct"] = compute_residuals_pct(dfp, COL_OBSERVADO, COL_PREDITO)
+
+    x = pd.to_numeric(dfp[COL_DELTA_T], errors="coerce").values
+    y = pd.to_numeric(dfp["resid_pct"], errors="coerce").values
+    mask = np.isfinite(x) & np.isfinite(y)
+    x = x[mask]
+    y = y[mask]
+
+    if len(x) < 10:
+        print("  [SKIP] FIG_C1: poucos dados para regressão")
+        return
+
+    fig, ax = plt.subplots(figsize=(7, 5))
+    ax.scatter(x, y, c='#555555', s=45, alpha=0.55,
+               edgecolors="white", linewidth=0.5)
+    ax.axhline(0, color="black", linestyle="--", linewidth=1.5)
+    ax.set_ylim(-100, 100)
+
+    fit = linear_fit_with_stats(x, y)
+    if fit.get("ok"):
+        x_line = np.linspace(np.min(x), np.max(x), 100)
+        y_line = fit["slope"] * x_line + fit["intercept"]
+        ax.plot(x_line, y_line, "-", color='#ff7f0e', linewidth=1.5,
+                 label=f"y = {fit['slope']:.2f}x{fit['intercept']:+.2f} | R² = {fit['r2']:.4f})". replace('.', ','))
+
+        txt = (f"y = {fit['slope']:.2f}x {fit['intercept']:+.2f}\n"
+               f"r = {fit['r']:.3f} (p={fit['p']:.3f})\n"
+               f"R² = {fit['r2']:.3f}")
+        """ax.text(0.05, 0.95, txt, transform=ax.transAxes, va="top", fontsize=9,
+                bbox=dict(boxstyle="round", facecolor="white", alpha=0.9))"""
+        print(txt)
+
+    ax.set_xlabel("Δt (meses)")
+    ax.set_ylabel("Resíduos (%)")
+    ax.legend(loc='lower right', fontsize=8)
+
+    save_figure(fig, output_dir, "FIG_C1_diffmed_vs_resid_linear")
+
+def figs_volume_triptych(df: pd.DataFrame, output_dir: Path,
+                         filename: str = "FIG_B_triptych_volume",
+                         title: str = "Validação por talhão (Flag=OK; Diffmed∈{-1,0,1})"):
+    """
+    Um único painel com 3 subplots (1x3), lado a lado:
+      (1) Estimado × Observado (1:1 + regressão + métricas)
+      (2) Resíduo (%) × Observado (LOWESS + faixas)
+      (3) Frequência/Histograma do resíduo (%)
+
+    Espera df já filtrado (Flag OK e Diffmed ∈ {-1,0,1}).
+    """
+    # ---------- dados ----------
+    obs = pd.to_numeric(df[COL_OBSERVADO], errors="coerce").values
+    est = pd.to_numeric(df[COL_PREDITO], errors="coerce").values
+    mask = np.isfinite(obs) & np.isfinite(est) & (obs > 1e-6)
+    obs = obs[mask]
+    est = est[mask]
+    resid_pct = (est - obs) / obs * 100
+    resid_pct = resid_pct[np.isfinite(resid_pct)]
+
+    metrics = calculate_metrics(obs, est)
+    fit = linear_fit_with_stats(obs, est)
+
+    # ---------- figura ----------
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+    ax1, ax2, ax3 = axes
+
+    # ==========================
+    # (1) Estimado x Observado
+    # ==========================
+    ax1.scatter(obs, est, c='#555555', s=35, alpha=0.6,
+                edgecolors="white", linewidth=0.5)
+
+    lim_max = max(np.nanmax(obs), np.nanmax(est)) * 1.05 if len(obs) else 1
+    ax1.plot([0, lim_max], [0, lim_max], c="black", linestyle="--", linewidth=1.5, label="Linha 1:1")
+
+    if fit.get("ok"):
+        x_line = np.linspace(np.nanmin(obs), np.nanmax(obs), 100)
+        y_line = fit["slope"] * x_line + fit["intercept"]
+        ax1.plot(x_line, y_line, "-", color='#ff7f0e', linewidth=1.5,
+                 label=f"y = {fit['slope']:.2f}x{fit['intercept']:+.2f} | R² = {fit['r2']:.4f})".replace('.', ','))
+
+    """textstr = (f"N = {metrics['N']}\n"
+               f"R² = {metrics['R2']:.4f}\n"
+               f"RMSE = {metrics['RMSE']:.2f} ({metrics['RMSE_pct']:.1f}%)\n"
+               f"MAE = {metrics['MAE']:.2f} ({metrics['MAE_pct']:.1f}%)\n"
+               f"Bias = {metrics['Bias']:+.2f} ({metrics['Bias_pct']:+.1f}%)")
+    ax1.text(0.05, 0.95, textstr, transform=ax1.transAxes, fontsize=9, va="top",
+             bbox=dict(boxstyle="round", facecolor="white", alpha=0.9))"""
+
+    ax1.set_xlabel("VTCC IFPC (m³/ha)")
+    ax1.set_ylabel("VTCC Wall-to-Wall Médio (m³/ha)")
+    ax1.set_xlim(0, lim_max)
+    ax1.set_ylim(0, lim_max)
+    ax1.set_aspect("equal")
+    ax1.legend(loc="lower right", fontsize=8)
+    ax1.set_title('(a)', fontsize=12, loc='left')
+
+    # ==========================
+    # (2) Resíduo (%) x Estimado
+    # ==========================
+    ax2.scatter(est, resid_pct, c='#555555', s=35, alpha=0.55,
+                edgecolors="white", linewidth=0.5)
+    ax2.set_ylim(-100, 100)
+
+    ax2.axhline(0, color="black", linestyle="--", linewidth=1.5)
+    """ax2.axhline(20, color="gray", linestyle=":", linewidth=1, alpha=0.7)
+    ax2.axhline(-20, color="gray", linestyle=":", linewidth=1, alpha=0.7)
+    ax2.fill_between([np.nanmin(obs)*0.95, np.nanmax(obs)*1.05], -20, 20,
+                     alpha=0.08, color="green")"""
+
+    ax2.set_xlabel("VTCC Wall-to-Wall Médio (m³/ha)")
+    ax2.set_ylabel("Resíduo Relativo (%)")
+    ax2.set_title('(b)', fontsize=12, loc='left')
+
+    # ==========================
+    # (3) Frequência dos resíduos (em %)
+    # ==========================
+    ax3 = axes[2]
+
+    # bins centralizados (resíduos em %)
+    bin_edges = np.arange(-105, 115, 10)  # bordas
+    bin_centers = np.arange(-100, 110, 10)  # centros
+
+    counts, _ = np.histogram(resid_pct, bins=bin_edges)
+    percentages = counts / len(resid_pct) * 100  # frequência em %
+
+    bars = ax3.bar(
+        bin_centers, percentages, width=8, alpha=0.7,
+        color="#555555", edgecolor="white", linewidth=0.8
+    )
+
+    # linha vertical em x=0 com "altura" limitada (fração do eixo Y)
+    # (ajuste o ymax conforme necessário; aqui deixo 0.23 = 23% do eixo)
+    ax3.axvline(x=0, ymax=0.96, color="black", linestyle="--", linewidth=1.5)
+
+    # rótulos acima das barras
+    for bar, pct in zip(bars, percentages):
+        if pct > 0:
+            ax3.text(
+                bar.get_x() + bar.get_width() / 2,
+                bar.get_height() + 0.5,
+                f"{pct:.1f}".replace('.', ','),
+                ha="center", va="bottom", fontsize=7
+            )
+
+    ax3.set_xlabel("Resíduos (%)")
+    ax3.set_ylabel("Frequência (%)")
+    ax3.set_xlim(-110, 110)
+    ax3.set_xticks(np.arange(-100, 110, 20))
+    ax3.grid(linestyle="--", alpha=0.3)
+    ax3.set_title("(c)", fontsize=12, loc="left")
+
+    ax3.spines["top"].set_visible(False)
+    ax3.spines["right"].set_visible(False)
+
+
+    plt.tight_layout()
+
+    # salvar
+    save_figure(fig, Path(output_dir), filename)
 
 
 # =============================================================================
 # PIPELINE PRINCIPAL
 # =============================================================================
 
-def run_validation(
-    input_file=INPUT_FILE,
-    worksheet=SHEET_NAME,
-    output_dir=OUTPUT_DIR,
-    col_talhao=COL_TALHAO,
-    col_observado=COL_OBSERVADO,
-    col_predito=COL_PREDITO,
-    col_area_cadastro=COL_AREA_CADASTRO,
-    col_area_raster=COL_AREA_RASTER,
-    col_idade=COL_IDADE,
-    col_regional=COL_REGIONAL,
-    col_rotacao=COL_ROTACAO,
-    save_figures=True,
-    save_report=True
+def run_validation_v2(
+    input_file: str = INPUT_FILE,
+    sheet_name: str = SHEET_NAME,
+    output_dir: Path = OUTPUT_DIR,
 ):
-    """
-    Pipeline completo de validação por talhão.
-
-    Parameters
-    ----------
-    input_file : str
-        Caminho do arquivo Excel com dados de validação.
-    output_dir : Path
-        Diretório para salvar os resultados.
-    col_* : str
-        Nomes das colunas no arquivo de entrada.
-    save_figures : bool
-        Se True, salva as figuras geradas.
-    save_report : bool
-        Se True, salva relatório Excel com métricas.
-
-    Returns
-    -------
-    dict
-        Dicionário com métricas e dados de validação.
-    """
     print("=" * 70)
-    print("VALIDAÇÃO DO MODELO POR TALHÃO")
+    print("VALIDAÇÃO DO MODELO - PIPELINE v2")
     print("=" * 70)
     print(f"Início: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"Arquivo: {input_file}")
+    print(f"Saída:   {output_dir}")
     print()
 
-    # Criar diretório de saída
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    # -------------------------------------------------------------------------
-    # 1. CARREGAMENTO DOS DADOS
-    # -------------------------------------------------------------------------
-    print("[1/5] Carregando dados de validação...")
-    df = pd.read_excel(input_file, worksheet)
-
-    print(f"  Arquivo: {input_file}")
-    print(f"  Talhões: {len(df)}")
-    print(f"  Colunas: {df.columns.tolist()}")
+    df0 = pd.read_excel(input_file, sheet_name=sheet_name)
+    print(f"Linhas (bruto): {len(df0)}")
+    print(f"Colunas: {list(df0.columns)}")
     print()
 
-    # Verificar colunas obrigatórias
-    required_cols = [col_observado, col_predito]
-    missing_cols = [col for col in required_cols if col not in df.columns]
-    if missing_cols:
-        raise ValueError(f"Colunas obrigatórias não encontradas: {missing_cols}")
+    # Checagens mínimas
+    required = [COL_AREA_CAD, COL_AREA_RASTER, COL_OBSERVADO, COL_PREDITO]
+    missing = [c for c in required if c not in df0.columns]
+    if missing:
+        raise ValueError(f"Colunas obrigatórias não encontradas: {missing}")
+    if COL_FLAG not in df0.columns:
+        raise ValueError(f"Coluna '{COL_FLAG}' não encontrada. Ajuste COL_FLAG.")
 
-    # Extrair dados
-    y_obs = df[col_observado].values
-    y_pred = df[col_predito].values
+    # Normaliza flag
+    df0["Flag_std"] = df0[COL_FLAG].astype(str).str.upper().str.strip()
 
-    # -------------------------------------------------------------------------
-    # 2. CÁLCULO DAS MÉTRICAS
-    # -------------------------------------------------------------------------
-    print("[2/5] Calculando métricas de validação...")
-    metrics = calculate_validation_metrics(y_obs, y_pred)
+    # =========================================================
+    # BLOCO A: ÁREA (filtra pelo campo flag - não vazio)
+    # =========================================================
+    df_area = df0.copy()
+    df_area = df_area[df_area["Flag_std"] == FLAG_OK]
+    print(f"Bloco A (ÁREA): {len(df_area)} linhas")
 
-    print(f"\n  Métricas de Validação:")
-    print(f"    N:        {metrics['N']}")
-    print(f"    R²:       {metrics['R2']:.4f}")
-    print(f"    RMSE:     {metrics['RMSE']:.2f} m³/ha ({metrics['RMSE_pct']:.1f}%)")
-    print(f"    MAE:      {metrics['MAE']:.2f} m³/ha ({metrics['MAE_pct']:.1f}%)")
-    print(f"    Bias:     {metrics['Bias']:.2f} m³/ha ({metrics['Bias_pct']:.1f}%)")
-    print(f"    MdAPE:    {metrics['MdAPE']:.1f}%")
-    print(f"    MAPE:     {metrics['MAPE']:.1f}%")
-    print(f"    Pearson:  {metrics['Pearson_r']:.4f} (p={metrics['Pearson_p']:.2e})")
-    print(f"    Willmott: {metrics['Willmott_d']:.4f}")
-    print(f"    NSE:      {metrics['NSE']:.4f}")
+    figA1_area_cad_vs_area_raster(df_area, Path(output_dir))
+    figA2_resid_area_pct_vs_area_raster(df_area, Path(output_dir))
+
+    # =========================================================
+    # BLOCO B: VOLUME (Flag OK + Diffmed ∈ {-1,0,+1})
+    # =========================================================
+    df_vol = df0.copy()
+    df_vol = df_vol[df_vol["Flag_std"] == FLAG_OK]
+
+    if COL_DELTA_T in df_vol.columns:
+        df_vol[COL_DELTA_T] = pd.to_numeric(df_vol[COL_DELTA_T], errors="coerce")
+        df_vol = df_vol[df_vol[COL_DELTA_T].isin([-1, 0, 1])]
+    else:
+        raise ValueError(f"Coluna {COL_DELTA_T} não encontrada para filtro Diffmed.")
+
+    # Remove inválidos e evita explosão por obs=0
+    df_vol[COL_OBSERVADO] = pd.to_numeric(df_vol[COL_OBSERVADO], errors="coerce")
+    df_vol[COL_PREDITO] = pd.to_numeric(df_vol[COL_PREDITO], errors="coerce")
+    df_vol = df_vol.dropna(subset=[COL_OBSERVADO, COL_PREDITO])
+    df_vol = df_vol[df_vol[COL_OBSERVADO] > 1e-6]
+
+    print(f"Bloco B (VOLUME, OK & Diffmed∈{{-1,0,1}}): {len(df_vol)} linhas")
+
+    # Métricas globais do bloco B
+    metrics_B = calculate_metrics(df_vol[COL_OBSERVADO].values, df_vol[COL_PREDITO].values)
+    print("  Métricas (Bloco B):")
+    print(f"    N:     {metrics_B['N']}")
+    print(f"    R²:    {metrics_B['R2']:.4f}")
+    print(f"    RMSE:  {metrics_B['RMSE']:.2f} m³/ha ({metrics_B['RMSE_pct']:.1f}%)")
+    print(f"    MAE:   {metrics_B['MAE']:.2f} m³/ha ({metrics_B['MAE_pct']:.1f}%)")
+    print(f"    Bias:  {metrics_B['Bias']:+.2f} m³/ha ({metrics_B['Bias_pct']:+.1f}%)")
     print()
 
-    # -------------------------------------------------------------------------
-    # 3. GRÁFICOS DIAGNÓSTICOS PRINCIPAIS
-    # -------------------------------------------------------------------------
-    print("[3/5] Gerando gráficos diagnósticos principais...")
+    figs_volume_triptych(df_vol, output_dir)
+    figB1_estimado_vs_observado(df_vol, Path(output_dir))
+    figB2_estimado_vs_residuo(df_vol, Path(output_dir))
+    figB3_frequencia_residuos(df_vol, Path(output_dir))
 
-    # Figura 1: Gráficos principais (2x2)
-    fig1, axes1 = plt.subplots(2, 2, figsize=(12, 10))
+    # Violinos mantendo filtro do bloco B
+    violin_resid_by_group(
+        df_vol, Path(output_dir),
+        group_col=COL_REGIME,
+        filename="FIG_B4_violin_resid_por_regime",
+        title="Resíduo (%) por Regime (violino)"
+    )
+    violin_resid_by_group(
+        df_vol, Path(output_dir),
+        group_col=COL_REGIONAL,
+        filename="FIG_B5_violin_resid_por_regional",
+        title="Resíduo (%) por Regional (violino)"
+    )
+    violin_resid_regional_x_regime(df_vol, Path(output_dir))
 
-    plot_observed_vs_predicted(y_obs, y_pred, metrics, ax=axes1[0, 0],
-                               title='(a) Observado vs Predito')
-    plot_residuals_vs_predicted(y_obs, y_pred, ax=axes1[0, 1], relative=True)
-    axes1[0, 1].set_title('(b) Resíduos vs Predito')
-    plot_residuals_histogram(y_obs, y_pred, ax=axes1[1, 0], relative=True)
-    axes1[1, 0].set_title('(c) Distribuição dos Resíduos')
-    plot_bland_altman(y_obs, y_pred, ax=axes1[1, 1])
-    axes1[1, 1].set_title('(d) Bland-Altman')
+    # =========================================================
+    # BLOCO C: Diffmed × resíduo (Flag OK, regressão linear)
+    # =========================================================
+    df_dt = df0.copy()
+    df_dt = df_dt[df_dt["Flag_std"] == FLAG_OK]
+    print(f"Bloco C (DIFFMED, OK): {len(df_dt)} linhas")
+    # 2) métricas TEMPORAIS (diffmed vs resíduo %) — isso bate com o FIG_C1
+    metrics_C_dt = calculate_temporal_regression_metrics(df_dt)
+    print("  Métricas TEMPORAIS (Diffmed × Resíduo%):")
+    print(f"    N:     {metrics_C_dt['N']}")
+    print(f"    y = {metrics_C_dt['slope']:.2f}x {metrics_C_dt['intercept']:+.2f}")
+    print(f"    r = {metrics_C_dt['r']:.3f} (p={metrics_C_dt['p']:.3f})")
+    print(f"    R² = {metrics_C_dt['R2']:.3f}")
+    print()
 
-    plt.tight_layout()
+    figC1_diffmed_vs_resid_linear(df_dt, Path(output_dir))
 
-    if save_figures:
-        fig1.savefig(output_dir / 'Validation_Main_Diagnostics.png',
-                     dpi=300, bbox_inches='tight')
-        print(f"  Salvo: {output_dir / 'Validation_Main_Diagnostics.png'}")
-
-    plt.show()
-
-    # -------------------------------------------------------------------------
-    # 4. GRÁFICOS ADICIONAIS
-    # -------------------------------------------------------------------------
-    print("[4/5] Gerando gráficos adicionais...")
-
-    # Figura 2: Análises por idade e área
-    has_idade = col_idade in df.columns
-    has_area_cad = col_area_cadastro in df.columns
-    has_area_raster = col_area_raster in df.columns
-
-    n_plots = sum([has_idade, has_area_cad, has_area_raster and has_area_cad,
-                   has_idade and has_area_cad])
-
-    if n_plots > 0:
-        fig2, axes2 = plt.subplots(2, 2, figsize=(12, 10))
-        axes2 = axes2.flatten()
-
-        plot_idx = 0
-
-        if has_idade:
-            plot_by_age_class(df, col_observado, col_predito, col_idade, ax=axes2[plot_idx])
-            plot_idx += 1
-
-        if has_area_cad:
-            plot_by_area_scatter(df, col_observado, col_predito, col_area_cadastro,
-                                 ax=axes2[plot_idx], area_type='Cadastro')
-            plot_idx += 1
-
-        if has_area_raster and has_area_cad:
-            plot_area_comparison(df, col_area_cadastro, col_area_raster, ax=axes2[plot_idx])
-            plot_idx += 1
-
-        if has_idade and has_area_cad:
-            plot_error_heatmap(df, col_observado, col_predito, col_idade,
-                               col_area_cadastro, ax=axes2[plot_idx])
-            plot_idx += 1
-
-        # Remover eixos não utilizados
-        for i in range(plot_idx, 4):
-            axes2[i].set_visible(False)
-
-        plt.tight_layout()
-
-        if save_figures:
-            fig2.savefig(output_dir / 'Validation_Age_Area_Analysis.png',
-                         dpi=300, bbox_inches='tight')
-            print(f"  Salvo: {output_dir / 'Validation_Age_Area_Analysis.png'}")
-
-        plt.show()
-
-    # Figura 3: Q-Q Plot e Distribuição Cumulativa
-    fig3, axes3 = plt.subplots(1, 2, figsize=(10, 4.5))
-
-    plot_qq_residuals(y_obs, y_pred, ax=axes3[0])
-    plot_cumulative_distribution(y_obs, y_pred, ax=axes3[1])
-
-    plt.tight_layout()
-
-    if save_figures:
-        fig3.savefig(output_dir / 'Validation_QQ_CDF.png',
-                     dpi=300, bbox_inches='tight')
-        print(f"  Salvo: {output_dir / 'Validation_QQ_CDF.png'}")
-
-    plt.show()
-
-    # -------------------------------------------------------------------------
-    # 5. EXPORTAÇÃO DO RELATÓRIO
-    # -------------------------------------------------------------------------
-    print("[5/5] Exportando relatório...")
-
-    if save_report:
-        report_path = output_dir / 'Validation_Report.xlsx'
-
-        with pd.ExcelWriter(report_path, engine='openpyxl') as writer:
-            # Métricas gerais
-            metrics_df = pd.DataFrame([{
-                'Data_Validacao': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                **metrics
-            }])
-            metrics_df.to_excel(writer, sheet_name='Metricas', index=False)
-
-            # Dados por talhão
-            df_results = df.copy()
-            df_results['Residuo'] = y_obs - y_pred
-            df_results['Residuo_pct'] = ((y_obs - y_pred) / y_obs) * 100
-            df_results['Erro_Abs_pct'] = np.abs(df_results['Residuo_pct'])
-            df_results.to_excel(writer, sheet_name='Dados_Talhao', index=False)
-
-            # Estatísticas por classe de idade (se disponível)
-            if has_idade:
-                df_age = df_results.copy()
-                df_age['idade_anos'] = df_age[col_idade] / 12
-                df_age['classe_idade'] = pd.cut(df_age['idade_anos'],
-                                                 bins=[0, 2, 3, 4, 5, 6, 7, 8, 100],
-                                                 labels=['<2', '2-3', '3-4', '4-5',
-                                                        '5-6', '6-7', '7-8', '>8'])
-                stats_age = df_age.groupby('classe_idade').agg({
-                    col_observado: ['count', 'mean', 'std'],
-                    col_predito: ['mean', 'std'],
-                    'Residuo_pct': ['mean', 'std', 'median'],
-                    'Erro_Abs_pct': ['mean', 'median']
-                }).round(2)
-                stats_age.columns = ['_'.join(col).strip() for col in stats_age.columns]
-                stats_age.to_excel(writer, sheet_name='Stats_por_Idade')
-
-            # Estatísticas por classe de área (se disponível)
-            if has_area_cad:
-                df_area = df_results.copy()
-                df_area['classe_area'] = pd.cut(df_area[col_area_cadastro],
-                                                 bins=[0, 5, 10, 20, 50, 1000],
-                                                 labels=['<5', '5-10', '10-20',
-                                                        '20-50', '>50'])
-                stats_area = df_area.groupby('classe_area').agg({
-                    col_observado: ['count', 'mean', 'std'],
-                    col_predito: ['mean', 'std'],
-                    'Residuo_pct': ['mean', 'std', 'median'],
-                    'Erro_Abs_pct': ['mean', 'median']
-                }).round(2)
-                stats_area.columns = ['_'.join(col).strip() for col in stats_area.columns]
-                stats_area.to_excel(writer, sheet_name='Stats_por_Area')
-
-        print(f"  Relatório salvo: {report_path}")
 
     print()
     print("=" * 70)
-    print("VALIDAÇÃO CONCLUÍDA")
+    print("VALIDAÇÃO v2 CONCLUÍDA")
     print(f"Término: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"Figuras salvas em: {output_dir}")
     print("=" * 70)
 
     return {
-        'metrics': metrics,
-        'data': df,
-        'predictions': {
-            'observed': y_obs,
-            'predicted': y_pred
-        }
+        "df_area": df_area,
+        "df_vol": df_vol,
+        "df_dt": df_dt,
+        "metrics_volume": metrics_B
     }
 
 
@@ -763,30 +826,4 @@ def run_validation(
 # =============================================================================
 
 if __name__ == '__main__':
-    # Exemplo de uso:
-    # Ajuste os caminhos e nomes das colunas conforme seu arquivo
-
-    print("\n" + "=" * 70)
-    print("CONFIGURAÇÃO")
-    print("=" * 70)
-    print(f"Arquivo de entrada: {INPUT_FILE}")
-    print(f"Diretório de saída: {OUTPUT_DIR}")
-    print()
-    print("Colunas esperadas:")
-    print(f"  - Talhão:        {COL_TALHAO}")
-    print(f"  - VTCC Obs:      {COL_OBSERVADO}")
-    print(f"  - VTCC Pred:     {COL_PREDITO}")
-    print(f"  - Área Cadastro: {COL_AREA_CADASTRO}")
-    print(f"  - Área Raster:   {COL_AREA_RASTER}")
-    print(f"  - Idade (meses): {COL_IDADE}")
-    print()
-
-    # Verificar se o arquivo existe
-    if not Path(INPUT_FILE).exists():
-        print(f"AVISO: Arquivo de entrada não encontrado: {INPUT_FILE}")
-        print("\nPara executar a validação, crie um arquivo Excel com as colunas:")
-        print("  TALHAO, VTCC_IFPC, VTCC_PRED, AREA_CADASTRO, AREA_RASTER, IDADE_MESES")
-        print("\nOu ajuste as constantes no início do script para corresponder")
-        print("aos nomes das colunas do seu arquivo.")
-    else:
-        results = run_validation()
+    run_validation_v2()

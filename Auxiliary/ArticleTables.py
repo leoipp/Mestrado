@@ -697,9 +697,9 @@ def generate_exploratory_figures(df: pd.DataFrame, output_dir: Union[str, Path])
             axes2[r, c].set_ylabel("")
 
     for i in range(ncols):
-        axes2[i, 0].set_ylabel("ZP90 (m)")
-        axes2[i, 1].set_ylabel("ZKurt")
-        axes2[i, 2].set_ylabel("ZStdDev (m)")
+        axes2[i, 0].set_ylabel("Z P90 (m)")
+        axes2[i, 1].set_ylabel("Z Kurt (média cúbica)")
+        axes2[i, 2].set_ylabel("Z σ (m)")
 
     for ax in axes2.flatten():
         ax.yaxis.set_major_locator(MaxNLocator(integer=True))

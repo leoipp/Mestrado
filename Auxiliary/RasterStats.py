@@ -59,20 +59,26 @@ def get_raster_stats(
     path = Path(raster_path)
 
     with rasterio.open(raster_path) as src:
-        data = src.read(1)
-        file_nodata = src.nodata if nodata is None else nodata
+        # Lê os dados brutos (sem máscara automática para ter controle total)
+        band_data = src.read(1)
 
-        # Mascara de pixels validos
+        # Usa nodata do arquivo se não foi passado explicitamente
+        file_nodata = nodata if nodata is not None else src.nodata
+
+        # Cria máscara combinada: nodata + valores não-finitos
+        mask = ~np.isfinite(band_data)
+
         if file_nodata is not None:
-            valid_mask = (data != file_nodata) & np.isfinite(data)
-        else:
-            valid_mask = np.isfinite(data)
+            # Usa np.isclose para comparação segura de floats
+            mask = mask | np.isclose(band_data, file_nodata, rtol=1e-5, atol=1e-8)
 
-        valid_data = data[valid_mask]
+        # Cria MaskedArray com a máscara combinada
+        band = np.ma.array(band_data, mask=mask)
+        valid_data = band.compressed()  # só pixels válidos (sem máscara)
 
         result = {
             'Arquivo': path.stem,
-            'Pixels_Total': data.size,
+            'Pixels_Total': band.size,
             'Pixels_Validos': valid_data.size,
         }
 
@@ -133,8 +139,10 @@ def get_raster_stats(
 
         # Area (se possivel calcular)
         try:
+            valid_pixels = int(band.count())
             pixel_area = abs(src.res[0] * src.res[1])
-            result['Area_ha'] = round((valid_data.size * pixel_area) / 10000, 4)
+            result['Area_ha'] = round((valid_pixels * pixel_area) / 10000, 4)
+
         except:
             result['Area_ha'] = None
 
@@ -183,6 +191,24 @@ def process_rasters(
         print(f"Padrao: {pattern}")
     else:
         files = [input_path]
+
+    # Remove duplicatas por nome (stem) - mantém apenas o primeiro
+    seen_stems = set()
+    unique_files = []
+    duplicates = []
+    for f in files:
+        if f.stem not in seen_stems:
+            seen_stems.add(f.stem)
+            unique_files.append(f)
+        else:
+            duplicates.append(f)
+
+    if duplicates:
+        print(f"\n[AVISO] {len(duplicates)} arquivos duplicados ignorados:")
+        for d in duplicates:
+            print(f"  - {d.name}")
+
+    files = unique_files
 
     print(f"Arquivos encontrados: {len(files)}")
     print(f"Estatisticas: {stats}")

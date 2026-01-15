@@ -3,10 +3,11 @@ from Auxiliary.RasterStats import process_rasters
 from Auxiliary.CalculoCubMean import generate_cubic_mean_raster
 from Auxiliary.CalculoStdDev import generate_stddev_raster
 from Auxiliary.MergeTiff import merge_tiffs, merge_batch
+from Auxiliary.AsciiToTiff import batch_convert
 import os
 import glob
-
-"""indicator_dir = r"G:\PycharmProjects\Mestrado\Forecast\Predictive\Metrics\SHAPEFILE\Book_2022_Base_2021.shp"
+"""
+indicator_dir = r"G:\PycharmProjects\Mestrado\Forecast\Predictive\Metrics\SHAPEFILE\Book_2022_Base_2021.shp"
 
 for folder in glob.glob(r"G:\PycharmProjects\Mestrado\Forecast\Predictive\Metrics\*"):
     print(f"Processing folder: {folder}")
@@ -16,16 +17,16 @@ for folder in glob.glob(r"G:\PycharmProjects\Mestrado\Forecast\Predictive\Metric
     predict_folder = os.path.join(folder, "10predict")
 
     # Find raster files in the predict folder
-    raster_files = glob.glob(os.path.join(predict_folder, "*.LAS_volume_estimado.tif"))
+    raster_files = glob.glob(os.path.join(predict_folder, "*.p90_cub_std_volume_incerteza.tif"))
 
     if not raster_files:
         print(f"  No raster files found in {predict_folder}")
-        raster_files = glob.glob(os.path.join(predict_folder, "*NP_volume_estimado.tif"))
+        raster_files = glob.glob(os.path.join(predict_folder, "*p90_cub_std_volume_incerteza.tif"))
 
     for raster_path in raster_files:
         print(f"  Processing raster: {os.path.basename(raster_path)}")
 
-        output_folder = os.path.join(predict_folder, "MAX_CUB_STD_CLIPPED")
+        output_folder = os.path.join(predict_folder, "P90_CUB_STD_CLIPPED_INCERTEZA")
 
         clip_raster_by_shape(
             raster_path=raster_path,
@@ -46,7 +47,7 @@ for folder in glob.glob(r"G:\PycharmProjects\Mestrado\Forecast\Predictive\Metric
     if os.path.basename(folder) in ["FEATURES_CAD", "SHAPEFILE"]:
         continue
 
-    cliped = os.path.join(folder, "10predict", "P90_CUB_CLIPPED")
+    cliped = os.path.join(folder, "10predict", "P90_CUB_STD_CLIPPED")
     process_rasters(
         input_path=cliped,
         output_excel=cliped+r"\raster_stats.xlsx",
@@ -156,16 +157,60 @@ merge_tiffs(
     compress="lzw",
 )
 """
-import pandas as pd
+"""import pandas as pd
 
 df = []
 for folder in glob.glob(r"G:\PycharmProjects\Mestrado\Forecast\Predictive\Metrics\*"):
     print(f"Processing folder: {folder}")
     if os.path.basename(folder) in ["FEATURES_CAD", "SHAPEFILE"]:
         continue
-    main = os.path.join(folder, "10predict", "MAX_CUB_STD_CLIPPED")
-    _ = pd.read_excel(main+r"\raster_stats.xlsx")
-    df.append(_)
+    main = os.path.join(folder, "10predict", "P90_CUB_STD_CLIPPED_INCERTEZA")
+    try:
+        _ = pd.read_excel(main+"\incerteza.xlsx")
+        _ = _[_["VAL"] != -9999]
+        df.append(_)
+    except FileNotFoundError:
+        print(f"  Arquivo nao encontrado: {main}")
+        continue
+
 final_df = pd.concat(df, ignore_index=True)
-final_df.to_excel(r"G:\PycharmProjects\Mestrado\Forecast\Predictive\Results\ALL_RASTER_STATS_MAX_CUB_STD_CLIPPED.xlsx",
-                  index=False)
+
+MAX_ROWS = 1_048_576
+output = r"G:\PycharmProjects\Mestrado\Forecast\Predictive\Results\ALL_RASTER_incerteza.xlsx"
+
+with pd.ExcelWriter(output, engine="openpyxl") as writer:
+    for i in range(0, len(final_df), MAX_ROWS):
+        chunk = final_df.iloc[i:i+MAX_ROWS]
+        sheet_name = f"parte_{i//MAX_ROWS + 1}"
+        chunk.to_excel(writer, sheet_name=sheet_name, index=False)
+
+print("Excel salvo em múltiplas abas.")
+"""
+
+for folder in glob.glob(r"G:\PycharmProjects\Mestrado\Forecast\Predictive\Metrics\*"):
+    if os.path.basename(folder) in ["FEATURES_CAD", "SHAPEFILE"]:
+        continue
+    print(f"Processing folder: {folder}")
+    chm = os.path.join(folder, "07chm")
+    dtm = os.path.join(folder, "04dtm")
+    try:
+        batch_convert(
+            input_folder=chm,
+            output_folder=chm
+        )
+        batch_convert(
+            input_folder=dtm,
+            output_folder=dtm
+        )
+        chm_files = glob.glob(os.path.join(chm, "*.tif"))
+        dtm_files = glob.glob(os.path.join(dtm, "*.tif"))
+        merge_tiffs(
+            input_files=chm_files,
+            output_file=os.path.join(chm, os.path.basename(folder)+"_CHM.tif"),
+        )
+        merge_tiffs(
+            input_files=dtm_files,
+            output_file=os.path.join(dtm, os.path.basename(folder)+"_DTM.tif"),
+        )
+    except Exception as e:
+        print(e)

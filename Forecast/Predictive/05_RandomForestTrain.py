@@ -18,6 +18,8 @@ Variáveis selecionadas (saída do 02_VariablesCorrelation.py / 03_FeatureSelect
 Saídas:
     - Models/RF_Regressor_MAX_CUB_STD.pkl: Modelo treinado serializado
     - Results/RF_Training_Metrics.xlsx: Métricas de validação cruzada
+        - Aba 'Tabela_Hiperparametros': [TABELA X] Hiperparâmetros ótimos do modelo
+        - Aba 'Tabela_Metricas_CV': [TABELA Y] Métricas de desempenho em validação cruzada
     - Results/RF_Feature_Importance.png: Gráfico de importância das variáveis
     - Results/RF_Diagnostics.png: Gráficos diagnósticos (Obs vs Pred, Resíduos)
 
@@ -52,8 +54,8 @@ FEATURE_NAMES = [
     'Elev P90',        # Percentil 90 - estrutura dominante
     'Elev CURT mean CUBE',        # Percentil 60 - estrutura média do dossel
     'Elev stddev',
-    'ROTACAO',         # Rotação florestal
-    'Regime',        # Regional
+    'Regime',         # Rotação florestal
+    'REGIONAL',        # Regional
     'Idade (meses)'    # Idade do plantio
 ]
 
@@ -80,15 +82,45 @@ INTERACTION_INDICATOR_PREFIXES = ['REGIONAL_', 'Regime_', 'Idade (meses)']
 DROP_ORIGINAL_AFTER_INTERACTIONS = False
 
 
-# Configuração de estilo dos gráficos
 plt.rcParams.update({
-    "font.family": "Times New Roman",
-    "font.size": 10,
-    "axes.titlesize": 10,
-    "axes.labelsize": 10,
-    "xtick.labelsize": 10,
-    "ytick.labelsize": 10,
-    "figure.dpi": 300
+    # Fonte
+    'font.family': 'serif',
+    'font.serif': ['Times New Roman', 'DejaVu Serif', 'serif'],
+    'font.size': 11,
+
+    # Eixos
+    'axes.labelsize': 12,
+    'axes.titlesize': 13,
+    'axes.linewidth': 0.8,
+    'axes.spines.top': False,     # Sem frame superior
+    'axes.spines.right': False,   # Sem frame direito
+    'axes.spines.left': True,
+    'axes.spines.bottom': True,
+
+    # Ticks
+    'xtick.labelsize': 10,
+    'ytick.labelsize': 10,
+    'xtick.major.width': 0.8,
+    'ytick.major.width': 0.8,
+    'xtick.direction': 'out',
+    'ytick.direction': 'out',
+
+    # Legenda
+    'legend.fontsize': 10,
+    'legend.frameon': False,
+    'legend.framealpha': 0.9,
+
+    # Figura
+    'figure.dpi': 100,
+    'savefig.dpi': 300,
+    'savefig.bbox': 'tight',
+    'savefig.pad_inches': 0.1,
+
+    # Grid (horizontal sutil)
+    'axes.grid': False,
+    'grid.alpha': 0.4,
+    'grid.linestyle': '--',
+    'grid.color': '#cccccc',
 })
 
 COLOR_PRIMARY = '#1f77b4'
@@ -275,21 +307,26 @@ def plot_diagnostics(y_true, y_pred, metrics, output_path=None):
     fig, axes = plt.subplots(1, 3, figsize=(14, 4.5))
 
     # Resíduos relativos
-    residuals_pct = (y_pred - y_true) / y_true
+    residuals_pct = (y_pred - y_true) / y_true * 100
 
     # --- (a) Observado vs Predito ---
     ax1 = axes[0]
-    ax1.scatter(y_true, y_pred, alpha=0.6, s=30, c=COLOR_PRIMARY, edgecolors='white', linewidth=0.5)
+    ax1.scatter(y_true, y_pred, alpha=0.6, s=30, color='#555555', edgecolors='white', linewidth=0.5)
 
-    # Linha 1:1
+    # Limites do gráfico
     lim_min = 0
     lim_max = max(max(y_true), max(y_pred)) * 1.05
-    ax1.plot([lim_min, lim_max], [lim_min, lim_max], 'r--', linewidth=1.5, label='Linha 1:1')
 
-    # Anotação com métricas
-    textstr = f"R² = {metrics['R2']:.4f}\nRMSE = {metrics['RMSE']:.2f} m³/ha\nBias = {metrics['Bias']:.2f} m³/ha"
-    ax1.text(0.05, 0.95, textstr, transform=ax1.transAxes, fontsize=9,
-             verticalalignment='top', bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+    # Regressão linear (y_pred = a*y_true + b)
+    z = np.polyfit(y_true, y_pred, 1)
+    p = np.poly1d(z)
+    x_line = np.linspace(min(y_true), max(y_true), 100)
+    r2_reg = r2_score(y_pred, p(y_true))  # R² da regressão
+    ax1.plot(x_line, p(x_line), '-', color=COLOR_SECONDARY, linewidth=1.5,
+             label=f'y = {z[0]:.2f}x {z[1]:+.2f} | R² = {r2_reg:.4f}'.replace('.', ','))
+
+    # Linha 1:1
+    ax1.plot([lim_min, lim_max], [lim_min, lim_max], '--', linewidth=1.5, label='Linha 1:1', color='black')
 
     ax1.set_xlabel('VTCC Observado (m³/ha)')
     ax1.set_ylabel('VTCC Predito (m³/ha)')
@@ -297,40 +334,56 @@ def plot_diagnostics(y_true, y_pred, metrics, output_path=None):
     ax1.set_ylim(lim_min, lim_max)
     ax1.set_aspect('equal')
     ax1.grid(linestyle='--', alpha=0.3)
-    ax1.set_title('(a) Observado vs Predito')
+    ax1.legend(loc='lower right', fontsize=8)
+    ax1.set_title('(a)', fontsize=12, loc='left')
+
+    ax1.spines['top'].set_visible(False)
+    ax1.spines['right'].set_visible(False)
 
     # --- (b) Resíduos vs Predito ---
     ax2 = axes[1]
-    ax2.scatter(y_pred, residuals_pct, alpha=0.6, s=30, c=COLOR_PRIMARY, edgecolors='white', linewidth=0.5)
-    ax2.axhline(y=0, color='red', linestyle='--', linewidth=1.5)
+    ax2.scatter(y_pred, residuals_pct, alpha=0.6, s=30, c='#555555', edgecolors='white', linewidth=0.5)
+    ax2.axhline(y=0, color='black', linestyle='--', linewidth=1.5)
     ax2.axhline(y=0.2, color='gray', linestyle=':', linewidth=1, alpha=0.7)
     ax2.axhline(y=-0.2, color='gray', linestyle=':', linewidth=1, alpha=0.7)
 
     ax2.set_xlabel('VTCC Predito (m³/ha)')
-    ax2.set_ylabel('Resíduos Relativos')
-    ax2.set_ylim(-1, 1)
+    ax2.set_ylabel('Resíduos (%)')
+    ax2.set_ylim(-100, 100)
     ax2.grid(linestyle='--', alpha=0.3)
-    ax2.set_title('(b) Resíduos vs Predito')
+    ax2.set_title('(b)', fontsize=12, loc='left')
+
+    ax2.spines['top'].set_visible(False)
+    ax2.spines['right'].set_visible(False)
 
     # --- (c) Histograma dos Resíduos ---
     ax3 = axes[2]
 
-    # Calcula bins centralizados
-    bin_edges = np.arange(-1.05, 1.15, 0.1)
-    bin_centers = np.arange(-1.0, 1.1, 0.1)
+    # Calcula bins centralizados (resíduos em %)
+    bin_edges = np.arange(-105, 115, 10)
+    bin_centers = np.arange(-100, 110, 10)
     counts, _ = np.histogram(residuals_pct, bins=bin_edges)
-    percentages = counts / len(residuals_pct) * 100
+    percentages = counts / len(residuals_pct) * 100  # Converter para %
 
-    ax3.bar(bin_centers, percentages, width=0.08, alpha=0.7,
-            color=COLOR_PRIMARY, edgecolor=COLOR_PRIMARY, linewidth=0.8)
-    ax3.axvline(x=0, color='red', linestyle='--', linewidth=1.5)
+    bars = ax3.bar(bin_centers, percentages, width=8, alpha=0.7,
+                   color='#555555', edgecolor='white', linewidth=0.8)
+    ax3.axvline(x=0, ymax=.98, color='black', linestyle='--', linewidth=1.5)
 
-    ax3.set_xlabel('Resíduos Relativos')
+    # Rótulos acima das barras
+    for bar, pct in zip(bars, percentages):
+        if pct > 0:
+            ax3.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5,
+                     f'{pct:.1f}'.replace('.', ','), ha='center', va='bottom', fontsize=7)
+
+    ax3.set_xlabel('Resíduos (%)')
     ax3.set_ylabel('Frequência (%)')
-    ax3.set_xlim(-1.1, 1.1)
-    ax3.set_xticks(np.arange(-1.0, 1.1, 0.2))
+    ax3.set_xlim(-110, 110)
+    ax3.set_xticks(np.arange(-100, 110, 20))
     ax3.grid(linestyle='--', alpha=0.3)
-    ax3.set_title('(c) Distribuição dos Resíduos')
+    ax3.set_title('(c)', fontsize=12, loc='left')
+
+    ax3.spines['top'].set_visible(False)
+    ax3.spines['right'].set_visible(False)
 
     plt.tight_layout()
 
@@ -340,6 +393,112 @@ def plot_diagnostics(y_true, y_pred, metrics, output_path=None):
 
     plt.show()
     return fig
+
+
+def create_hyperparameters_table(best_params):
+    """
+    Cria tabela formatada de hiperparâmetros ótimos do modelo Random Forest.
+
+    [INSERIR TABELA X – Hiperparâmetros ótimos do modelo Random Forest]
+
+    Parameters
+    ----------
+    best_params : dict
+        Dicionário com os melhores hiperparâmetros encontrados.
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame formatado para publicação.
+    """
+    # Mapeamento de nomes técnicos para descrições em português
+    param_descriptions = {
+        'n_estimators': ('Número de árvores', 'Quantidade de árvores na floresta'),
+        'max_features': ('Máximo de variáveis', 'Variáveis consideradas em cada divisão'),
+        'max_depth': ('Profundidade máxima', 'Profundidade máxima das árvores'),
+        'min_samples_split': ('Mín. amostras para divisão', 'Mínimo de amostras para dividir um nó'),
+        'min_samples_leaf': ('Mín. amostras por folha', 'Mínimo de amostras em um nó terminal'),
+        'bootstrap': ('Bootstrap', 'Amostragem com reposição')
+    }
+
+    rows = []
+    for param, value in best_params.items():
+        if param in param_descriptions:
+            name, description = param_descriptions[param]
+            # Formata valores especiais
+            if value is None:
+                formatted_value = 'Sem limite'
+            elif isinstance(value, bool):
+                formatted_value = 'Sim' if value else 'Não'
+            elif isinstance(value, float):
+                formatted_value = f'{value:.2f}'
+            else:
+                formatted_value = str(value)
+
+            rows.append({
+                'Hiperparâmetro': name,
+                'Valor Ótimo': formatted_value,
+                'Descrição': description
+            })
+
+    return pd.DataFrame(rows)
+
+
+def create_cv_metrics_table(metrics, cv_folds, n_samples):
+    """
+    Cria tabela formatada de métricas de desempenho em validação cruzada.
+
+    [INSERIR TABELA Y – Métricas de desempenho em validação cruzada]
+
+    Parameters
+    ----------
+    metrics : dict
+        Dicionário com as métricas calculadas.
+    cv_folds : int
+        Número de folds utilizados na validação cruzada.
+    n_samples : int
+        Número total de amostras.
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame formatado para publicação.
+    """
+    rows = [
+        {
+            'Métrica': 'Coeficiente de Determinação (R²)',
+            'Valor': f'{metrics["R2"]:.4f}',
+            'Unidade': '-',
+            'Observação': f'{metrics["R2"]*100:.2f}% da variância explicada'
+        },
+        {
+            'Métrica': 'RMSE',
+            'Valor': f'{metrics["RMSE"]:.2f}',
+            'Unidade': 'm³/ha',
+            'Observação': f'{metrics["RMSE_pct"]:.2f}% relativo à média'
+        },
+        {
+            'Métrica': 'MAE',
+            'Valor': f'{metrics["MAE"]:.2f}',
+            'Unidade': 'm³/ha',
+            'Observação': f'{metrics["MAE_pct"]:.2f}% relativo à média'
+        },
+        {
+            'Métrica': 'Viés (Bias)',
+            'Valor': f'{metrics["Bias"]:.4f}',
+            'Unidade': 'm³/ha',
+            'Observação': f'{metrics["Bias_pct"]:.2f}% relativo à média'
+        }
+    ]
+
+    df = pd.DataFrame(rows)
+
+    # Adiciona informações de contexto como metadados
+    df.attrs['cv_folds'] = cv_folds
+    df.attrs['n_samples'] = n_samples
+    df.attrs['note'] = f'Validação cruzada com {cv_folds} folds e {n_samples} amostras'
+
+    return df
 
 
 def plot_feature_importance(model, feature_names, output_path=None):
@@ -448,6 +607,8 @@ def train_random_forest(
         - best_params: Melhores hiperparâmetros
         - feature_importance: DataFrame com importância das variáveis
         - predictions: Predições da validação cruzada
+        - hyperparams_table: [TABELA X] DataFrame com hiperparâmetros ótimos formatados
+        - cv_metrics_table: [TABELA Y] DataFrame com métricas de validação cruzada formatadas
     """
     print("=" * 70)
     print("TREINAMENTO DO MODELO RANDOM FOREST")
@@ -611,6 +772,10 @@ def train_random_forest(
             'Best_Params': str(best_params)
         }])
 
+        # Cria tabelas formatadas para publicação
+        hyperparams_table = create_hyperparameters_table(best_params)
+        cv_metrics_table = create_cv_metrics_table(metrics, cv_folds_evaluation, len(y))
+
         metrics_path = OUTPUT_DIR / 'RF_Training_Metrics.xlsx'
         with pd.ExcelWriter(metrics_path, engine='openpyxl') as writer:
             metrics_df.to_excel(writer, sheet_name='Metrics', index=False)
@@ -624,7 +789,15 @@ def train_random_forest(
             })
             pred_df.to_excel(writer, sheet_name='Predictions', index=False)
 
+            # [TABELA X] Hiperparâmetros ótimos do modelo Random Forest
+            hyperparams_table.to_excel(writer, sheet_name='Tabela_Hiperparametros', index=False)
+
+            # [TABELA Y] Métricas de desempenho em validação cruzada
+            cv_metrics_table.to_excel(writer, sheet_name='Tabela_Metricas_CV', index=False)
+
         print(f"  Metricas salvas: {metrics_path}")
+        print(f"  [TABELA X] Hiperparâmetros ótimos: aba 'Tabela_Hiperparametros'")
+        print(f"  [TABELA Y] Métricas de validação cruzada: aba 'Tabela_Metricas_CV'")
 
     print()
     print("=" * 70)
@@ -632,12 +805,18 @@ def train_random_forest(
     print(f"Término: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 70)
 
+    # Cria tabelas formatadas (mesmo se save_results=False)
+    hyperparams_table = create_hyperparameters_table(best_params)
+    cv_metrics_table = create_cv_metrics_table(metrics, cv_folds_evaluation, len(y))
+
     return {
         'model': rf_optimized,
         'metrics': metrics,
         'best_params': best_params,
         'feature_importance': importance_df,
-        'predictions': y_pred_cv
+        'predictions': y_pred_cv,
+        'hyperparams_table': hyperparams_table,  # [TABELA X]
+        'cv_metrics_table': cv_metrics_table     # [TABELA Y]
     }
 
 

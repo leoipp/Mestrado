@@ -11,7 +11,18 @@ Etapas de processamento:
     4. Remoção de valores negativos
     5. Filtragem por faixa de idade
     6. Detecção de outliers via Z-score
-    7. Exportação dos DataFrames limpos
+    7. Seleção manual de outliers com lasso (dados brutos)
+    8. Sincronização wide <- long
+    9. Transformação para pares consecutivos (i1, i2, v1, v2)
+    10. Cálculo de métricas de delta:
+        - dv: v2 - v1 (com filtro para valores < 0)
+        - di: i2 - i1
+        - delta: dv / di (taxa de variação)
+    11. Seleção manual de outliers com lasso (dados de delta)
+    12. Exportação dos DataFrames limpos com 3 sheets:
+        - stack_enriquecido (wide)
+        - long
+        - pares_delta (com dv, di, delta)
 
 Autor: Leonardo Ippolito Rodrigues
 Data: 2024
@@ -34,7 +45,7 @@ for backend in ['TkAgg', 'Qt5Agg', 'QtAgg', 'WXAgg']:
         continue
 
 import matplotlib.pyplot as plt
-from matplotlib.widgets import LassoSelector
+from matplotlib.widgets import LassoSelector, Button
 from matplotlib.path import Path
 from scipy import stats
 
@@ -54,8 +65,12 @@ VAR1 = "Z Kurt"
 VAR2 = "Z P90"
 VAR3 = "Z σ"
 
-# Sheet name (todos usam a mesma)
-SHEET_NAME = "long"
+# Sheet names
+SHEET_WIDE = "stack_enriquecido"
+SHEET_LONG = "long"
+
+# Chaves para sincronização entre sheets
+SYNC_KEYS = ['x', 'y', 'REF_ID']
 
 # Caminhos dos arquivos de saída
 OUTPUT_DIR = r"G:\PycharmProjects\Mestrado\Forecast\Projection\Exports\cleaned"
@@ -67,6 +82,61 @@ OUTPUT_FILE_3 = rf"{OUTPUT_DIR}\stddev_comp_cleaned.xlsx"
 MIN_AGE_MONTHS = 36          # Idade mínima em meses
 MAX_AGE_MONTHS = 120        # Idade máxima em meses
 ZSCORE_THRESHOLD = 3         # Limiar para detecção de outliers via Z-score
+
+# =============================================================================
+# CONFIGURAÇÃO DOS PARES PARA TRANSFORMAÇÃO
+# =============================================================================
+# Definição de TODAS as combinações onde i1 < i2
+PARES = [
+    {
+        'nome': '2019_2022',
+        'i1': 'IDADE_19_meses',
+        'i2': 'IDADE_22_meses',
+        'v1': 'v_2019',
+        'v2': 'v_2022'
+    },
+    {
+        'nome': '2019_2024',
+        'i1': 'IDADE_19_meses',
+        'i2': 'IDADE_24_meses',
+        'v1': 'v_2019',
+        'v2': 'v_2024'
+    },
+    {
+        'nome': '2019_2025',
+        'i1': 'IDADE_19_meses',
+        'i2': 'IDADE_25_meses',
+        'v1': 'v_2019',
+        'v2': 'v_2025'
+    },
+    {
+        'nome': '2022_2024',
+        'i1': 'IDADE_22_meses',
+        'i2': 'IDADE_24_meses',
+        'v1': 'v_2022',
+        'v2': 'v_2024'
+    },
+    {
+        'nome': '2022_2025',
+        'i1': 'IDADE_22_meses',
+        'i2': 'IDADE_25_meses',
+        'v1': 'v_2022',
+        'v2': 'v_2025'
+    },
+    {
+        'nome': '2024_2025',
+        'i1': 'IDADE_24_meses',
+        'i2': 'IDADE_25_meses',
+        'v1': 'v_2024',
+        'v2': 'v_2025'
+    }
+]
+
+# Colunas de identificação que serão mantidas na transformação
+COLS_ID_TRANSFORM = ['x', 'y', 'variable', 'projeto', 'REF_ID', 'DATA_PLANTIO']
+
+# Nome da terceira sheet para dados transformados
+SHEET_TRANSFORM = "pares_delta"
 
 # Configuração de estilo dos gráficos
 plt.rcParams.update({
@@ -91,6 +161,7 @@ def lasso_filter_dataframe(df, x_col, y_col, title):
     """
     Permite selecionar pontos com lasso e removê-los do DataFrame.
     - Desenhe com o mouse para selecionar pontos (pode fazer múltiplas seleções)
+    - Clique no botão "Aplicar" para remover os pontos selecionados e atualizar o gráfico
     - Pressione ENTER para confirmar e fechar
     - Pressione ESC para cancelar (não remove nada)
 
@@ -100,39 +171,82 @@ def lasso_filter_dataframe(df, x_col, y_col, title):
     df = df.reset_index(drop=True)
 
     fig, ax = plt.subplots(figsize=(12, 7))
-    points_xy = np.column_stack((df[x_col].values, df[y_col].values))
+
+    # Ajustar layout para dar espaço ao botão
+    fig.subplots_adjust(bottom=0.15)
+
+    # Estado mutável para rastrear pontos
+    state = {
+        'points_xy': np.column_stack((df[x_col].values, df[y_col].values)),
+        'visible_mask': np.ones(len(df), dtype=bool),  # True = visível
+        'selected_indices': set(),  # Índices selecionados na seleção atual
+        'all_removed_indices': set(),  # Todos os índices já removidos
+        'highlight_scatter': None,
+        'main_scatter': None
+    }
 
     # Scatter plot inicial
-    scatter = ax.scatter(points_xy[:, 0], points_xy[:, 1], s=12, alpha=0.6, c='blue')
+    state['main_scatter'] = ax.scatter(
+        state['points_xy'][:, 0],
+        state['points_xy'][:, 1],
+        s=12, alpha=0.6, c='blue'
+    )
 
     ax.set_xlabel(x_col)
     ax.set_ylabel(y_col)
-    ax.set_title(f"{title}\n[Desenhe para selecionar | ENTER=confirmar | ESC=cancelar]")
+    ax.set_title(f"{title}\n[Desenhe para selecionar | Aplicar=remover | ENTER=confirmar | ESC=cancelar]")
     ax.grid(ls="--", alpha=0.5)
 
-    # Usar set para acumular índices selecionados (múltiplas seleções)
-    selected_indices = set()
-    highlight_scatter = None
+    def update_scatter():
+        """Atualiza o scatter principal mostrando apenas pontos visíveis."""
+        if state['main_scatter'] is not None:
+            state['main_scatter'].remove()
+
+        visible_idx = np.where(state['visible_mask'])[0]
+        if len(visible_idx) > 0:
+            visible_x = state['points_xy'][visible_idx, 0]
+            visible_y = state['points_xy'][visible_idx, 1]
+
+            state['main_scatter'] = ax.scatter(
+                visible_x, visible_y,
+                s=12, alpha=0.6, c='blue'
+            )
+
+            # Recalcular limites dos eixos com margem de 5%
+            x_min, x_max = visible_x.min(), visible_x.max()
+            y_min, y_max = visible_y.min(), visible_y.max()
+            x_margin = (x_max - x_min) * 0.05 if x_max != x_min else 0.1
+            y_margin = (y_max - y_min) * 0.05 if y_max != y_min else 0.1
+            ax.set_xlim(x_min - x_margin, x_max + x_margin)
+            ax.set_ylim(y_min - y_margin, y_max + y_margin)
+        else:
+            state['main_scatter'] = None
+
+        # Atualizar título com contagem
+        n_removed = len(state['all_removed_indices'])
+        ax.set_title(f"{title}\n[Removidos: {n_removed} | ENTER=confirmar | ESC=cancelar]")
+        fig.canvas.draw_idle()
 
     def update_highlight():
         """Atualiza a visualização dos pontos selecionados."""
-        nonlocal highlight_scatter
-        if highlight_scatter is not None:
-            highlight_scatter.remove()
-            highlight_scatter = None
+        if state['highlight_scatter'] is not None:
+            state['highlight_scatter'].remove()
+            state['highlight_scatter'] = None
 
-        if selected_indices:
-            sel_list = list(selected_indices)
-            highlight_scatter = ax.scatter(
-                df.iloc[sel_list][x_col],
-                df.iloc[sel_list][y_col],
+        if state['selected_indices']:
+            sel_list = list(state['selected_indices'])
+            state['highlight_scatter'] = ax.scatter(
+                state['points_xy'][sel_list, 0],
+                state['points_xy'][sel_list, 1],
                 facecolors='none',
                 edgecolors='red',
                 s=50,
                 linewidths=1.5,
-                label=f'Selecionados: {len(selected_indices)}'
+                label=f'Selecionados: {len(state["selected_indices"])}'
             )
             ax.legend(loc='upper right')
+        else:
+            ax.legend().remove() if ax.get_legend() else None
         fig.canvas.draw_idle()
 
     def onselect(verts):
@@ -140,36 +254,73 @@ def lasso_filter_dataframe(df, x_col, y_col, title):
         if len(verts) < 3:
             return
         path = Path(verts)
-        mask = path.contains_points(points_xy)
-        new_selected = set(np.where(mask)[0])
-        selected_indices.update(new_selected)  # Acumula seleções
+        # Só considerar pontos que ainda estão visíveis
+        visible_idx = np.where(state['visible_mask'])[0]
+        visible_points = state['points_xy'][visible_idx]
+        mask = path.contains_points(visible_points)
+        new_selected = set(visible_idx[mask])
+        state['selected_indices'].update(new_selected)
         update_highlight()
-        print(f"  Selecionados até agora: {len(selected_indices)} pontos")
+        print(f"  Selecionados até agora: {len(state['selected_indices'])} pontos")
+
+    def on_apply(event):
+        """Callback do botão Aplicar - remove pontos selecionados e atualiza gráfico."""
+        if not state['selected_indices']:
+            print("  Nenhum ponto selecionado para aplicar.")
+            return
+
+        # Mover selecionados para removidos
+        state['all_removed_indices'].update(state['selected_indices'])
+
+        # Atualizar máscara de visibilidade
+        for idx in state['selected_indices']:
+            state['visible_mask'][idx] = False
+
+        n_applied = len(state['selected_indices'])
+        state['selected_indices'].clear()
+
+        # Remover highlight
+        if state['highlight_scatter'] is not None:
+            state['highlight_scatter'].remove()
+            state['highlight_scatter'] = None
+
+        # Atualizar scatter
+        update_scatter()
+
+        print(f"  Aplicado: {n_applied} pontos removidos. Total removidos: {len(state['all_removed_indices'])}")
 
     def on_key(event):
         """Callback para teclas."""
         if event.key == 'enter':
+            # Incluir seleção atual nos removidos antes de fechar
+            state['all_removed_indices'].update(state['selected_indices'])
             plt.close(fig)
         elif event.key == 'escape':
-            selected_indices.clear()
+            state['all_removed_indices'].clear()
             plt.close(fig)
 
     # Criar o LassoSelector e manter referência
     lasso = LassoSelector(ax, onselect, useblit=True)
     fig.canvas.mpl_connect('key_press_event', on_key)
 
-    # Manter referência ao lasso (evita garbage collection)
-    fig._lasso = lasso
+    # Criar botão "Aplicar"
+    ax_button = fig.add_axes([0.4, 0.02, 0.2, 0.05])
+    btn_apply = Button(ax_button, 'Aplicar (Remover Seleção)')
+    btn_apply.on_clicked(on_apply)
 
-    plt.tight_layout()
+    # Manter referências (evita garbage collection)
+    fig._lasso = lasso
+    fig._btn_apply = btn_apply
+
+    plt.tight_layout(rect=[0, 0.08, 1, 1])
     plt.show(block=True)
 
     # Processar resultado
-    if not selected_indices:
+    if not state['all_removed_indices']:
         print("Nenhum ponto selecionado.")
         return df, pd.DataFrame()
 
-    sel_list = list(selected_indices)
+    sel_list = list(state['all_removed_indices'])
     df_removed = df.iloc[sel_list].copy()
     df_cleaned = df.drop(index=sel_list).reset_index(drop=True)
 
@@ -213,6 +364,48 @@ def print_section_header(title):
     print("\n" + "=" * 60)
     print(title)
     print("=" * 60)
+
+
+def sync_wide_from_long(df_wide, df_long, chaves=SYNC_KEYS):
+    """
+    Sincroniza sheet wide com base na sheet long limpa.
+    Remove da wide as linhas cujas chaves (x, y, REF_ID) não existem mais na long.
+
+    Args:
+        df_wide: DataFrame da sheet wide original
+        df_long: DataFrame da sheet long após limpeza
+        chaves: lista de colunas para identificar linhas únicas
+
+    Returns:
+        DataFrame wide filtrado
+    """
+    # Verificar se as chaves existem em ambos os dataframes
+    for chave in chaves:
+        if chave not in df_wide.columns:
+            print(f"  AVISO: Coluna '{chave}' não encontrada na sheet wide")
+            return df_wide
+        if chave not in df_long.columns:
+            print(f"  AVISO: Coluna '{chave}' não encontrada na sheet long")
+            return df_wide
+
+    # Obter combinações únicas de chaves no long limpo
+    chaves_long = df_long[chaves].drop_duplicates()
+
+    # Criar coluna temporária para merge
+    df_wide = df_wide.copy()
+    df_wide['_merge_key'] = df_wide[chaves].astype(str).agg('|'.join, axis=1)
+    chaves_long['_merge_key'] = chaves_long[chaves].astype(str).agg('|'.join, axis=1)
+
+    # Filtrar wide mantendo apenas linhas que existem no long
+    chaves_validas = set(chaves_long['_merge_key'])
+    mask = df_wide['_merge_key'].isin(chaves_validas)
+
+    df_wide_filtrado = df_wide[mask].drop(columns=['_merge_key']).copy()
+
+    linhas_removidas = len(df_wide) - len(df_wide_filtrado)
+    print(f"  Wide sincronizado: {len(df_wide_filtrado)} linhas (removidas: {linhas_removidas})")
+
+    return df_wide_filtrado
 
 
 def apply_consistency_filters(df, var_name, df_name):
@@ -272,6 +465,288 @@ def apply_consistency_filters(df, var_name, df_name):
     return df
 
 
+def transformar_para_pares(df):
+    """
+    Transforma DataFrame de formato wide para pares consecutivos.
+
+    Cada linha original pode gerar até 6 linhas (pares):
+    - Par 2019->2022, 2019->2024, 2019->2025
+    - Par 2022->2024, 2022->2025, 2024->2025
+
+    Só gera o par se ambos v1 e v2 forem válidos (não NaN e não zero).
+
+    Args:
+        df: DataFrame original com colunas v_2019, v_2022, etc.
+
+    Returns:
+        DataFrame com colunas i1, i2, v1, v2 e identificação do par
+    """
+    linhas_resultado = []
+
+    for idx, row in df.iterrows():
+        for par in PARES:
+            # Verificar se ambos os valores são válidos
+            v1 = row.get(par['v1'])
+            v2 = row.get(par['v2'])
+            i1 = row.get(par['i1'])
+            i2 = row.get(par['i2'])
+
+            # Pular se v1 ou v2 for NaN ou zero
+            if pd.isna(v1) or pd.isna(v2) or v1 == 0 or v2 == 0:
+                continue
+
+            # Pular se i1 ou i2 for NaN
+            if pd.isna(i1) or pd.isna(i2):
+                continue
+
+            # Criar linha do par
+            linha_par = {
+                'i1': i1,
+                'i2': i2,
+                'v1': v1,
+                'v2': v2,
+                'par': par['nome']
+            }
+
+            # Adicionar colunas de identificação
+            for col in COLS_ID_TRANSFORM:
+                if col in row.index:
+                    linha_par[col] = row[col]
+
+            linhas_resultado.append(linha_par)
+
+    # Criar DataFrame resultado
+    df_resultado = pd.DataFrame(linhas_resultado)
+
+    # Reordenar colunas
+    cols_ordem = COLS_ID_TRANSFORM + ['par', 'i1', 'i2', 'v1', 'v2']
+    cols_existentes = [c for c in cols_ordem if c in df_resultado.columns]
+    df_resultado = df_resultado[cols_existentes]
+
+    return df_resultado
+
+
+def calcular_delta_metrics(df):
+    """
+    Calcula as métricas de delta a partir do DataFrame de pares.
+
+    Calcula:
+    - dv: v2 - v1 (diferença de valores)
+    - di: i2 - i1 (diferença de idades)
+    - delta: dv / di (taxa de variação)
+
+    Aplica filtro para remover valores onde dv < 0.
+
+    Args:
+        df: DataFrame com colunas i1, i2, v1, v2
+
+    Returns:
+        DataFrame com colunas dv, di, delta adicionadas (filtrado)
+    """
+    df = df.copy()
+
+    # Calcular diferenças
+    df['dv'] = df['v2'] - df['v1']
+    df['di'] = df['i2'] - df['i1']
+
+    # Registrar quantidade antes do filtro
+    n_antes = len(df)
+
+    # Filtrar valores onde dv < 0
+    df = df[df['dv'] >= 0].copy()
+
+    n_apos = len(df)
+    n_removidos = n_antes - n_apos
+    if n_removidos > 0:
+        print(f"  → {n_removidos} registros removidos: dv (v2-v1) < 0")
+
+    # Calcular delta (evitar divisão por zero)
+    df['delta'] = np.where(df['di'] != 0, (df['dv'] / df['v1']) / df['di'], np.nan)
+
+    # Remover linhas onde delta é NaN (di era zero)
+    n_antes_nan = len(df)
+    df = df.dropna(subset=['delta'])
+    n_nan_removidos = n_antes_nan - len(df)
+    if n_nan_removidos > 0:
+        print(f"  → {n_nan_removidos} registros removidos: di = 0 (divisão impossível)")
+
+    return df
+
+
+def lasso_filter_delta(df, x_col, y_col, title):
+    """
+    Permite selecionar pontos com lasso e removê-los do DataFrame de delta.
+    Versão específica para a worksheet de delta/pares.
+
+    - Desenhe com o mouse para selecionar pontos (pode fazer múltiplas seleções)
+    - Clique no botão "Aplicar" para remover os pontos selecionados e atualizar o gráfico
+    - Pressione ENTER para confirmar e fechar
+    - Pressione ESC para cancelar (não remove nada)
+
+    Retorna df_filtrado e df_removidos.
+    """
+    # Resetar índice para garantir alinhamento
+    df = df.reset_index(drop=True)
+
+    fig, ax = plt.subplots(figsize=(12, 7))
+
+    # Ajustar layout para dar espaço ao botão
+    fig.subplots_adjust(bottom=0.15)
+
+    # Estado mutável para rastrear pontos
+    state = {
+        'points_xy': np.column_stack((df[x_col].values, df[y_col].values)),
+        'visible_mask': np.ones(len(df), dtype=bool),  # True = visível
+        'selected_indices': set(),  # Índices selecionados na seleção atual
+        'all_removed_indices': set(),  # Todos os índices já removidos
+        'highlight_scatter': None,
+        'main_scatter': None
+    }
+
+    # Scatter plot inicial
+    state['main_scatter'] = ax.scatter(
+        state['points_xy'][:, 0],
+        state['points_xy'][:, 1],
+        s=12, alpha=0.6, c='purple'
+    )
+
+    ax.set_xlabel(x_col)
+    ax.set_ylabel(y_col)
+    ax.set_title(f"{title}\n[Desenhe para selecionar | Aplicar=remover | ENTER=confirmar | ESC=cancelar]")
+    ax.grid(ls="--", alpha=0.5)
+
+    def update_scatter():
+        """Atualiza o scatter principal mostrando apenas pontos visíveis."""
+        if state['main_scatter'] is not None:
+            state['main_scatter'].remove()
+
+        visible_idx = np.where(state['visible_mask'])[0]
+        if len(visible_idx) > 0:
+            visible_x = state['points_xy'][visible_idx, 0]
+            visible_y = state['points_xy'][visible_idx, 1]
+
+            state['main_scatter'] = ax.scatter(
+                visible_x, visible_y,
+                s=12, alpha=0.6, c='purple'
+            )
+
+            # Recalcular limites dos eixos com margem de 5%
+            x_min, x_max = visible_x.min(), visible_x.max()
+            y_min, y_max = visible_y.min(), visible_y.max()
+            x_margin = (x_max - x_min) * 0.05 if x_max != x_min else 0.1
+            y_margin = (y_max - y_min) * 0.05 if y_max != y_min else 0.1
+            ax.set_xlim(x_min - x_margin, x_max + x_margin)
+            ax.set_ylim(y_min - y_margin, y_max + y_margin)
+        else:
+            state['main_scatter'] = None
+
+        # Atualizar título com contagem
+        n_removed = len(state['all_removed_indices'])
+        ax.set_title(f"{title}\n[Removidos: {n_removed} | ENTER=confirmar | ESC=cancelar]")
+        fig.canvas.draw_idle()
+
+    def update_highlight():
+        """Atualiza a visualização dos pontos selecionados."""
+        if state['highlight_scatter'] is not None:
+            state['highlight_scatter'].remove()
+            state['highlight_scatter'] = None
+
+        if state['selected_indices']:
+            sel_list = list(state['selected_indices'])
+            state['highlight_scatter'] = ax.scatter(
+                state['points_xy'][sel_list, 0],
+                state['points_xy'][sel_list, 1],
+                facecolors='none',
+                edgecolors='red',
+                s=50,
+                linewidths=1.5,
+                label=f'Selecionados: {len(state["selected_indices"])}'
+            )
+            ax.legend(loc='upper right')
+        else:
+            ax.legend().remove() if ax.get_legend() else None
+        fig.canvas.draw_idle()
+
+    def onselect(verts):
+        """Callback chamado quando o lasso é completado."""
+        if len(verts) < 3:
+            return
+        path = Path(verts)
+        # Só considerar pontos que ainda estão visíveis
+        visible_idx = np.where(state['visible_mask'])[0]
+        visible_points = state['points_xy'][visible_idx]
+        mask = path.contains_points(visible_points)
+        new_selected = set(visible_idx[mask])
+        state['selected_indices'].update(new_selected)
+        update_highlight()
+        print(f"  Selecionados até agora: {len(state['selected_indices'])} pontos")
+
+    def on_apply(event):
+        """Callback do botão Aplicar - remove pontos selecionados e atualiza gráfico."""
+        if not state['selected_indices']:
+            print("  Nenhum ponto selecionado para aplicar.")
+            return
+
+        # Mover selecionados para removidos
+        state['all_removed_indices'].update(state['selected_indices'])
+
+        # Atualizar máscara de visibilidade
+        for idx in state['selected_indices']:
+            state['visible_mask'][idx] = False
+
+        n_applied = len(state['selected_indices'])
+        state['selected_indices'].clear()
+
+        # Remover highlight
+        if state['highlight_scatter'] is not None:
+            state['highlight_scatter'].remove()
+            state['highlight_scatter'] = None
+
+        # Atualizar scatter
+        update_scatter()
+
+        print(f"  Aplicado: {n_applied} pontos removidos. Total removidos: {len(state['all_removed_indices'])}")
+
+    def on_key(event):
+        """Callback para teclas."""
+        if event.key == 'enter':
+            # Incluir seleção atual nos removidos antes de fechar
+            state['all_removed_indices'].update(state['selected_indices'])
+            plt.close(fig)
+        elif event.key == 'escape':
+            state['all_removed_indices'].clear()
+            plt.close(fig)
+
+    # Criar o LassoSelector e manter referência
+    lasso = LassoSelector(ax, onselect, useblit=True)
+    fig.canvas.mpl_connect('key_press_event', on_key)
+
+    # Criar botão "Aplicar"
+    ax_button = fig.add_axes([0.4, 0.02, 0.2, 0.05])
+    btn_apply = Button(ax_button, 'Aplicar (Remover Seleção)')
+    btn_apply.on_clicked(on_apply)
+
+    # Manter referências (evita garbage collection)
+    fig._lasso = lasso
+    fig._btn_apply = btn_apply
+
+    plt.tight_layout(rect=[0, 0.08, 1, 1])
+    plt.show(block=True)
+
+    # Processar resultado
+    if not state['all_removed_indices']:
+        print("Nenhum ponto selecionado para remoção no delta.")
+        return df, pd.DataFrame()
+
+    sel_list = list(state['all_removed_indices'])
+    df_removed = df.iloc[sel_list].copy()
+    df_cleaned = df.drop(index=sel_list).reset_index(drop=True)
+
+    print(f"Pontos removidos manualmente (delta): {len(df_removed)}")
+
+    return df_cleaned, df_removed
+
+
 # =============================================================================
 # CRIAÇÃO DO DIRETÓRIO DE SAÍDA
 # =============================================================================
@@ -284,16 +759,22 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 print_section_header("CARREGAMENTO DOS DADOS")
 
 print(f"\nCarregando {VAR1} de: {INPUT_FILE_1}")
-df_var1 = pd.read_excel(INPUT_FILE_1, sheet_name=SHEET_NAME)
-print(f"  Dimensões: {df_var1.shape[0]} linhas × {df_var1.shape[1]} colunas")
+df_var1_wide = pd.read_excel(INPUT_FILE_1, sheet_name=SHEET_WIDE)
+df_var1 = pd.read_excel(INPUT_FILE_1, sheet_name=SHEET_LONG)
+print(f"  Sheet '{SHEET_WIDE}': {df_var1_wide.shape[0]} linhas × {df_var1_wide.shape[1]} colunas")
+print(f"  Sheet '{SHEET_LONG}': {df_var1.shape[0]} linhas × {df_var1.shape[1]} colunas")
 
 print(f"\nCarregando {VAR2} de: {INPUT_FILE_2}")
-df_var2 = pd.read_excel(INPUT_FILE_2, sheet_name=SHEET_NAME)
-print(f"  Dimensões: {df_var2.shape[0]} linhas × {df_var2.shape[1]} colunas")
+df_var2_wide = pd.read_excel(INPUT_FILE_2, sheet_name=SHEET_WIDE)
+df_var2 = pd.read_excel(INPUT_FILE_2, sheet_name=SHEET_LONG)
+print(f"  Sheet '{SHEET_WIDE}': {df_var2_wide.shape[0]} linhas × {df_var2_wide.shape[1]} colunas")
+print(f"  Sheet '{SHEET_LONG}': {df_var2.shape[0]} linhas × {df_var2.shape[1]} colunas")
 
 print(f"\nCarregando {VAR3} de: {INPUT_FILE_3}")
-df_var3 = pd.read_excel(INPUT_FILE_3, sheet_name=SHEET_NAME)
-print(f"  Dimensões: {df_var3.shape[0]} linhas × {df_var3.shape[1]} colunas")
+df_var3_wide = pd.read_excel(INPUT_FILE_3, sheet_name=SHEET_WIDE)
+df_var3 = pd.read_excel(INPUT_FILE_3, sheet_name=SHEET_LONG)
+print(f"  Sheet '{SHEET_WIDE}': {df_var3_wide.shape[0]} linhas × {df_var3_wide.shape[1]} colunas")
+print(f"  Sheet '{SHEET_LONG}': {df_var3.shape[0]} linhas × {df_var3.shape[1]} colunas")
 
 
 # =============================================================================
@@ -521,15 +1002,201 @@ print(f"  {VAR1}: {len(df_var1_final)} registros (removidos manualmente: {len(df
 print(f"  {VAR2}: {len(df_var2_final)} registros (removidos manualmente: {len(df_var2_removed)})")
 print(f"  {VAR3}: {len(df_var3_final)} registros (removidos manualmente: {len(df_var3_removed)})")
 
-# Exportação para Excel
-df_var1_final.to_excel(OUTPUT_FILE_1, index=False)
+# =============================================================================
+# SINCRONIZAÇÃO WIDE <- LONG
+# =============================================================================
+print_section_header("SINCRONIZAÇÃO WIDE <- LONG")
+
+print(f"\nSincronizando {VAR1}...")
+df_var1_wide_sync = sync_wide_from_long(df_var1_wide, df_var1_final)
+
+print(f"\nSincronizando {VAR2}...")
+df_var2_wide_sync = sync_wide_from_long(df_var2_wide, df_var2_final)
+
+print(f"\nSincronizando {VAR3}...")
+df_var3_wide_sync = sync_wide_from_long(df_var3_wide, df_var3_final)
+
+# =============================================================================
+# TRANSFORMAÇÃO PARA PARES E CÁLCULO DE DELTA
+# =============================================================================
+#%% Transformação e cálculo de delta
+print_section_header("TRANSFORMAÇÃO PARA PARES E CÁLCULO DE DELTA")
+
+# Processar VAR1 (Z Kurt)
+print(f"\n--- Processando {VAR1} ---")
+print("  [1] Transformando para pares...")
+df_var1_pares = transformar_para_pares(df_var1_wide_sync)
+print(f"      Pares gerados: {len(df_var1_pares)}")
+
+print("  [2] Calculando dv, di e delta...")
+df_var1_delta = calcular_delta_metrics(df_var1_pares)
+print(f"      Registros após filtro dv >= 0: {len(df_var1_delta)}")
+
+# Processar VAR2 (Z P90)
+print(f"\n--- Processando {VAR2} ---")
+print("  [1] Transformando para pares...")
+df_var2_pares = transformar_para_pares(df_var2_wide_sync)
+print(f"      Pares gerados: {len(df_var2_pares)}")
+
+print("  [2] Calculando dv, di e delta...")
+df_var2_delta = calcular_delta_metrics(df_var2_pares)
+print(f"      Registros após filtro dv >= 0: {len(df_var2_delta)}")
+
+# Processar VAR3 (Z σ)
+print(f"\n--- Processando {VAR3} ---")
+print("  [1] Transformando para pares...")
+df_var3_pares = transformar_para_pares(df_var3_wide_sync)
+print(f"      Pares gerados: {len(df_var3_pares)}")
+
+print("  [2] Calculando dv, di e delta...")
+df_var3_delta = calcular_delta_metrics(df_var3_pares)
+print(f"      Registros após filtro dv >= 0: {len(df_var3_delta)}")
+
+
+# =============================================================================
+# VISUALIZAÇÃO DO DELTA (PRÉ-FILTRAGEM MANUAL)
+# =============================================================================
+#%% Scatter plots do delta
+print_section_header("VISUALIZAÇÃO DO DELTA")
+
+fig, axes = plt.subplots(1, 3, figsize=(14, 5))
+
+# Delta VAR1 vs v1 (valor inicial)
+axes[0].scatter(df_var1_delta['v1'], df_var1_delta['delta'], alpha=0.5, s=10, c='purple')
+axes[0].grid(linestyle='--', color='gray', alpha=0.5)
+axes[0].set_xlabel('Valor Inicial (v1)')
+axes[0].set_ylabel('Delta (dv/di)')
+axes[0].set_title(f'Delta {VAR1} vs v1')
+
+# Delta VAR2 vs v1
+axes[1].scatter(df_var2_delta['v1'], df_var2_delta['delta'], alpha=0.5, s=10, c='purple')
+axes[1].grid(linestyle='--', color='gray', alpha=0.5)
+axes[1].set_xlabel('Valor Inicial (v1)')
+axes[1].set_ylabel('Delta (dv/di)')
+axes[1].set_title(f'Delta {VAR2} vs v1')
+
+# Delta VAR3 vs v1
+axes[2].scatter(df_var3_delta['v1'], df_var3_delta['delta'], alpha=0.5, s=10, c='purple')
+axes[2].grid(linestyle='--', color='gray', alpha=0.5)
+axes[2].set_xlabel('Valor Inicial (v1)')
+axes[2].set_ylabel('Delta (dv/di)')
+axes[2].set_title(f'Delta {VAR3} vs v1')
+
+plt.tight_layout()
+plt.savefig(rf"{OUTPUT_DIR}\scatter_delta_pre_filtragem.png", dpi=300, bbox_inches='tight')
+plt.show()
+
+
+# =============================================================================
+# SELEÇÃO MANUAL DE OUTLIERS NO DELTA (LASSO)
+# =============================================================================
+#%% Seleção manual com lasso para delta de cada variável
+print_section_header("SELEÇÃO MANUAL DE OUTLIERS NO DELTA")
+
+print("\n>>> Selecione outliers no Delta de Z Kurt (VAR1)")
+print("    Desenhe com o mouse | ENTER=confirmar | ESC=cancelar")
+df_var1_delta_final, df_var1_delta_removed = lasso_filter_delta(
+    df_var1_delta,
+    x_col="v1",
+    y_col="delta",
+    title="Seleção manual de outliers – Delta Z Kurt (v1 x delta)"
+)
+
+print("\n>>> Selecione outliers no Delta de Z P90 (VAR2)")
+print("    Desenhe com o mouse | ENTER=confirmar | ESC=cancelar")
+df_var2_delta_final, df_var2_delta_removed = lasso_filter_delta(
+    df_var2_delta,
+    x_col="v1",
+    y_col="delta",
+    title="Seleção manual de outliers – Delta Z P90 (v1 x delta)"
+)
+
+print("\n>>> Selecione outliers no Delta de Z σ (VAR3)")
+print("    Desenhe com o mouse | ENTER=confirmar | ESC=cancelar")
+df_var3_delta_final, df_var3_delta_removed = lasso_filter_delta(
+    df_var3_delta,
+    x_col="v1",
+    y_col="delta",
+    title="Seleção manual de outliers – Delta Z σ (v1 x delta)"
+)
+
+
+# =============================================================================
+# VISUALIZAÇÃO FINAL DO DELTA (PÓS-FILTRAGEM MANUAL)
+# =============================================================================
+#%% Scatter plots finais do delta
+print_section_header("VISUALIZAÇÃO FINAL DO DELTA (PÓS-FILTRAGEM MANUAL)")
+
+fig, axes = plt.subplots(1, 3, figsize=(14, 5))
+
+axes[0].scatter(df_var1_delta_final['v1'], df_var1_delta_final['delta'], alpha=0.5, s=10, c='green')
+axes[0].grid(linestyle='--', color='gray', alpha=0.5)
+axes[0].set_xlabel('Valor Inicial (v1)')
+axes[0].set_ylabel('Delta (dv/di)')
+axes[0].set_title(f'Delta {VAR1} vs v1 (Final)')
+
+axes[1].scatter(df_var2_delta_final['v1'], df_var2_delta_final['delta'], alpha=0.5, s=10, c='green')
+axes[1].grid(linestyle='--', color='gray', alpha=0.5)
+axes[1].set_xlabel('Valor Inicial (v1)')
+axes[1].set_ylabel('Delta (dv/di)')
+axes[1].set_title(f'Delta {VAR2} vs v1 (Final)')
+
+axes[2].scatter(df_var3_delta_final['v1'], df_var3_delta_final['delta'], alpha=0.5, s=10, c='green')
+axes[2].grid(linestyle='--', color='gray', alpha=0.5)
+axes[2].set_xlabel('Valor Inicial (v1)')
+axes[2].set_ylabel('Delta (dv/di)')
+axes[2].set_title(f'Delta {VAR3} vs v1 (Final)')
+
+plt.tight_layout()
+plt.savefig(rf"{OUTPUT_DIR}\scatter_delta_final.png", dpi=300, bbox_inches='tight')
+plt.show()
+
+
+# =============================================================================
+# RESUMO DO DELTA
+# =============================================================================
+print_section_header("RESUMO DOS DADOS DE DELTA")
+
+print("\nResumo dos DataFrames de delta após filtragem manual:")
+print(f"  {VAR1}: {len(df_var1_delta_final)} registros (removidos manualmente: {len(df_var1_delta_removed)})")
+print(f"  {VAR2}: {len(df_var2_delta_final)} registros (removidos manualmente: {len(df_var2_delta_removed)})")
+print(f"  {VAR3}: {len(df_var3_delta_final)} registros (removidos manualmente: {len(df_var3_delta_removed)})")
+
+
+# =============================================================================
+# EXPORTAÇÃO COM TRÊS SHEETS
+# =============================================================================
+print_section_header("EXPORTAÇÃO DOS ARQUIVOS LIMPOS")
+
+# Exportação VAR1 com três sheets
+with pd.ExcelWriter(OUTPUT_FILE_1, engine='openpyxl') as writer:
+    df_var1_wide_sync.to_excel(writer, sheet_name=SHEET_WIDE, index=False)
+    df_var1_final.to_excel(writer, sheet_name=SHEET_LONG, index=False)
+    df_var1_delta_final.to_excel(writer, sheet_name=SHEET_TRANSFORM, index=False)
 print(f"\n✓ {VAR1} exportado para:\n  {OUTPUT_FILE_1}")
+print(f"    - Sheet '{SHEET_WIDE}': {len(df_var1_wide_sync)} linhas")
+print(f"    - Sheet '{SHEET_LONG}': {len(df_var1_final)} linhas")
+print(f"    - Sheet '{SHEET_TRANSFORM}': {len(df_var1_delta_final)} linhas (com dv, di, delta)")
 
-df_var2_final.to_excel(OUTPUT_FILE_2, index=False)
+# Exportação VAR2 com três sheets
+with pd.ExcelWriter(OUTPUT_FILE_2, engine='openpyxl') as writer:
+    df_var2_wide_sync.to_excel(writer, sheet_name=SHEET_WIDE, index=False)
+    df_var2_final.to_excel(writer, sheet_name=SHEET_LONG, index=False)
+    df_var2_delta_final.to_excel(writer, sheet_name=SHEET_TRANSFORM, index=False)
 print(f"\n✓ {VAR2} exportado para:\n  {OUTPUT_FILE_2}")
+print(f"    - Sheet '{SHEET_WIDE}': {len(df_var2_wide_sync)} linhas")
+print(f"    - Sheet '{SHEET_LONG}': {len(df_var2_final)} linhas")
+print(f"    - Sheet '{SHEET_TRANSFORM}': {len(df_var2_delta_final)} linhas (com dv, di, delta)")
 
-df_var3_final.to_excel(OUTPUT_FILE_3, index=False)
+# Exportação VAR3 com três sheets
+with pd.ExcelWriter(OUTPUT_FILE_3, engine='openpyxl') as writer:
+    df_var3_wide_sync.to_excel(writer, sheet_name=SHEET_WIDE, index=False)
+    df_var3_final.to_excel(writer, sheet_name=SHEET_LONG, index=False)
+    df_var3_delta_final.to_excel(writer, sheet_name=SHEET_TRANSFORM, index=False)
 print(f"\n✓ {VAR3} exportado para:\n  {OUTPUT_FILE_3}")
+print(f"    - Sheet '{SHEET_WIDE}': {len(df_var3_wide_sync)} linhas")
+print(f"    - Sheet '{SHEET_LONG}': {len(df_var3_final)} linhas")
+print(f"    - Sheet '{SHEET_TRANSFORM}': {len(df_var3_delta_final)} linhas (com dv, di, delta)")
 
 print("\n" + "=" * 60)
 print("PROCESSAMENTO CONCLUÍDO")

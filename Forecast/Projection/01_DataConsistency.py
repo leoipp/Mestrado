@@ -153,6 +153,51 @@ plt.rcParams.update({
 COLOR_PRIMARY = '#1f77b4'
 COLOR_OUTLIER = 'red'
 
+# Cores para visualização por regime
+COLORS_REGIME = {
+    'Talhadia': '#d62728',
+    'Alto fuste': '#2ca02c'
+}
+
+
+# =============================================================================
+# FUNÇÕES DE ESTRATIFICAÇÃO
+# =============================================================================
+def extrair_regional(ref_id):
+    """Extrai os primeiros 2 caracteres do REF_ID como regional."""
+    if pd.isna(ref_id) or len(str(ref_id)) < 2:
+        return 'XX'
+    return str(ref_id)[:2].upper()
+
+
+def extrair_regime(ref_id):
+    """
+    Extrai o regime de manejo do REF_ID (caracteres 11:13).
+
+    Retorna:
+        'Talhadia' se começar com 'R'
+        'Alto fuste' caso contrário
+    """
+    if pd.isna(ref_id) or len(str(ref_id)) < 13:
+        return 'Alto fuste'
+
+    codigo = str(ref_id)[11:13].upper()
+
+    # R ou R_ indica Talhadia (reforma)
+    if codigo.startswith('R'):
+        return 'Talhadia'
+    else:
+        return 'Alto fuste'
+
+
+def preparar_dados_estrato(df):
+    """Prepara o DataFrame adicionando colunas regional, regime e grupo."""
+    df = df.copy()
+    df['regional'] = df['REF_ID'].apply(extrair_regional)
+    df['regime'] = df['REF_ID'].apply(extrair_regime)
+    df['grupo'] = df['regional'] + '_' + df['regime']
+    return df
+
 
 # =============================================================================
 # FUNÇÕES AUXILIARES
@@ -747,6 +792,284 @@ def lasso_filter_delta(df, x_col, y_col, title):
     return df_cleaned, df_removed
 
 
+def lasso_filter_por_estrato(df, x_col, y_col, var_name, color_col='regime'):
+    """
+    Aplica filtro lasso por estrato (regional + regime).
+
+    Para cada grupo, abre uma janela de seleção manual.
+    Retorna o DataFrame consolidado após todas as filtragens.
+
+    Args:
+        df: DataFrame com colunas 'regional', 'regime', 'grupo'
+        x_col: Nome da coluna para eixo X
+        y_col: Nome da coluna para eixo Y
+        var_name: Nome da variável para títulos
+        color_col: Coluna para colorir pontos ('regime' ou None)
+
+    Returns:
+        df_final: DataFrame consolidado após filtragens
+        df_removed_total: DataFrame com todos os pontos removidos
+    """
+    # Garantir que temos as colunas de estrato
+    if 'grupo' not in df.columns:
+        df = preparar_dados_estrato(df)
+
+    grupos = df['grupo'].unique()
+    grupos = sorted(grupos)
+
+    print(f"\n  Grupos encontrados: {len(grupos)}")
+    for g in grupos:
+        n = len(df[df['grupo'] == g])
+        print(f"    {g}: {n} registros")
+
+    dfs_limpos = []
+    dfs_removidos = []
+
+    for grupo in grupos:
+        grupo_df = df[df['grupo'] == grupo].copy()
+        n_grupo = len(grupo_df)
+
+        if n_grupo == 0:
+            continue
+
+        # Extrair regime para cor
+        regime = grupo_df['regime'].iloc[0] if 'regime' in grupo_df.columns else 'Alto fuste'
+        cor = COLORS_REGIME.get(regime, COLOR_PRIMARY)
+
+        print(f"\n>>> [{grupo}] n={n_grupo} - Selecione outliers")
+        print("    Desenhe com o mouse | ENTER=confirmar | ESC=cancelar")
+
+        # Usar lasso filter com cor do regime
+        df_limpo, df_removido = lasso_filter_dataframe_com_cor(
+            grupo_df,
+            x_col=x_col,
+            y_col=y_col,
+            title=f"Seleção manual - {var_name}\nGrupo: {grupo} (n={n_grupo})",
+            cor=cor
+        )
+
+        dfs_limpos.append(df_limpo)
+        if not df_removido.empty:
+            dfs_removidos.append(df_removido)
+
+        print(f"    [{grupo}] Removidos: {len(df_removido)} | Restantes: {len(df_limpo)}")
+
+    # Consolidar
+    df_final = pd.concat(dfs_limpos, ignore_index=True) if dfs_limpos else pd.DataFrame()
+    df_removed_total = pd.concat(dfs_removidos, ignore_index=True) if dfs_removidos else pd.DataFrame()
+
+    print(f"\n  TOTAL: {len(df_final)} registros (removidos: {len(df_removed_total)})")
+
+    return df_final, df_removed_total
+
+
+def lasso_filter_dataframe_com_cor(df, x_col, y_col, title, cor='blue'):
+    """
+    Versão do lasso_filter_dataframe com cor customizável.
+    """
+    # Resetar índice para garantir alinhamento
+    df = df.reset_index(drop=True)
+
+    fig, ax = plt.subplots(figsize=(12, 7))
+    fig.subplots_adjust(bottom=0.15)
+
+    state = {
+        'points_xy': np.column_stack((df[x_col].values, df[y_col].values)),
+        'visible_mask': np.ones(len(df), dtype=bool),
+        'selected_indices': set(),
+        'all_removed_indices': set(),
+        'highlight_scatter': None,
+        'main_scatter': None
+    }
+
+    state['main_scatter'] = ax.scatter(
+        state['points_xy'][:, 0],
+        state['points_xy'][:, 1],
+        s=12, alpha=0.6, c=cor
+    )
+
+    ax.set_xlabel(x_col)
+    ax.set_ylabel(y_col)
+    ax.set_title(f"{title}\n[Desenhe para selecionar | Aplicar=remover | ENTER=confirmar | ESC=cancelar]")
+    ax.grid(ls="--", alpha=0.5)
+
+    def update_scatter():
+        if state['main_scatter'] is not None:
+            state['main_scatter'].remove()
+
+        visible_idx = np.where(state['visible_mask'])[0]
+        if len(visible_idx) > 0:
+            visible_x = state['points_xy'][visible_idx, 0]
+            visible_y = state['points_xy'][visible_idx, 1]
+
+            state['main_scatter'] = ax.scatter(
+                visible_x, visible_y,
+                s=12, alpha=0.6, c=cor
+            )
+
+            x_min, x_max = visible_x.min(), visible_x.max()
+            y_min, y_max = visible_y.min(), visible_y.max()
+            x_margin = (x_max - x_min) * 0.05 if x_max != x_min else 0.1
+            y_margin = (y_max - y_min) * 0.05 if y_max != y_min else 0.1
+            ax.set_xlim(x_min - x_margin, x_max + x_margin)
+            ax.set_ylim(y_min - y_margin, y_max + y_margin)
+        else:
+            state['main_scatter'] = None
+
+        n_removed = len(state['all_removed_indices'])
+        ax.set_title(f"{title}\n[Removidos: {n_removed} | ENTER=confirmar | ESC=cancelar]")
+        fig.canvas.draw_idle()
+
+    def update_highlight():
+        if state['highlight_scatter'] is not None:
+            state['highlight_scatter'].remove()
+            state['highlight_scatter'] = None
+
+        if state['selected_indices']:
+            sel_list = list(state['selected_indices'])
+            state['highlight_scatter'] = ax.scatter(
+                state['points_xy'][sel_list, 0],
+                state['points_xy'][sel_list, 1],
+                facecolors='none',
+                edgecolors='red',
+                s=50,
+                linewidths=1.5,
+                label=f'Selecionados: {len(state["selected_indices"])}'
+            )
+            ax.legend(loc='upper right')
+        else:
+            ax.legend().remove() if ax.get_legend() else None
+        fig.canvas.draw_idle()
+
+    def onselect(verts):
+        if len(verts) < 3:
+            return
+        path = Path(verts)
+        visible_idx = np.where(state['visible_mask'])[0]
+        visible_points = state['points_xy'][visible_idx]
+        mask = path.contains_points(visible_points)
+        new_selected = set(visible_idx[mask])
+        state['selected_indices'].update(new_selected)
+        update_highlight()
+        print(f"  Selecionados até agora: {len(state['selected_indices'])} pontos")
+
+    def on_apply(event):
+        if not state['selected_indices']:
+            print("  Nenhum ponto selecionado para aplicar.")
+            return
+
+        state['all_removed_indices'].update(state['selected_indices'])
+
+        for idx in state['selected_indices']:
+            state['visible_mask'][idx] = False
+
+        n_applied = len(state['selected_indices'])
+        state['selected_indices'].clear()
+
+        if state['highlight_scatter'] is not None:
+            state['highlight_scatter'].remove()
+            state['highlight_scatter'] = None
+
+        update_scatter()
+
+        print(f"  Aplicado: {n_applied} pontos removidos. Total removidos: {len(state['all_removed_indices'])}")
+
+    def on_key(event):
+        if event.key == 'enter':
+            state['all_removed_indices'].update(state['selected_indices'])
+            plt.close(fig)
+        elif event.key == 'escape':
+            state['all_removed_indices'].clear()
+            plt.close(fig)
+
+    lasso = LassoSelector(ax, onselect, useblit=True)
+    fig.canvas.mpl_connect('key_press_event', on_key)
+
+    ax_button = fig.add_axes([0.4, 0.02, 0.2, 0.05])
+    btn_apply = Button(ax_button, 'Aplicar (Remover Seleção)')
+    btn_apply.on_clicked(on_apply)
+
+    fig._lasso = lasso
+    fig._btn_apply = btn_apply
+
+    plt.tight_layout(rect=[0, 0.08, 1, 1])
+    plt.show(block=True)
+
+    if not state['all_removed_indices']:
+        return df, pd.DataFrame()
+
+    sel_list = list(state['all_removed_indices'])
+    df_removed = df.iloc[sel_list].copy()
+    df_cleaned = df.drop(index=sel_list).reset_index(drop=True)
+
+    return df_cleaned, df_removed
+
+
+def lasso_filter_delta_por_estrato(df, x_col, y_col, var_name):
+    """
+    Aplica filtro lasso por estrato para dados de delta.
+
+    Args:
+        df: DataFrame de delta com colunas REF_ID
+        x_col: Nome da coluna para eixo X
+        y_col: Nome da coluna para eixo Y
+        var_name: Nome da variável para títulos
+
+    Returns:
+        df_final: DataFrame consolidado após filtragens
+        df_removed_total: DataFrame com todos os pontos removidos
+    """
+    # Garantir que temos as colunas de estrato
+    if 'grupo' not in df.columns:
+        df = preparar_dados_estrato(df)
+
+    grupos = df['grupo'].unique()
+    grupos = sorted(grupos)
+
+    print(f"\n  Grupos encontrados: {len(grupos)}")
+    for g in grupos:
+        n = len(df[df['grupo'] == g])
+        print(f"    {g}: {n} registros")
+
+    dfs_limpos = []
+    dfs_removidos = []
+
+    for grupo in grupos:
+        grupo_df = df[df['grupo'] == grupo].copy()
+        n_grupo = len(grupo_df)
+
+        if n_grupo == 0:
+            continue
+
+        regime = grupo_df['regime'].iloc[0] if 'regime' in grupo_df.columns else 'Alto fuste'
+        cor = COLORS_REGIME.get(regime, 'purple')
+
+        print(f"\n>>> [{grupo}] n={n_grupo} - Selecione outliers no Delta")
+        print("    Desenhe com o mouse | ENTER=confirmar | ESC=cancelar")
+
+        df_limpo, df_removido = lasso_filter_dataframe_com_cor(
+            grupo_df,
+            x_col=x_col,
+            y_col=y_col,
+            title=f"Delta {var_name} - Grupo: {grupo}\n(v1 x delta, n={n_grupo})",
+            cor=cor
+        )
+
+        dfs_limpos.append(df_limpo)
+        if not df_removido.empty:
+            dfs_removidos.append(df_removido)
+
+        print(f"    [{grupo}] Removidos: {len(df_removido)} | Restantes: {len(df_limpo)}")
+
+    # Consolidar
+    df_final = pd.concat(dfs_limpos, ignore_index=True) if dfs_limpos else pd.DataFrame()
+    df_removed_total = pd.concat(dfs_removidos, ignore_index=True) if dfs_removidos else pd.DataFrame()
+
+    print(f"\n  TOTAL: {len(df_final)} registros (removidos: {len(df_removed_total)})")
+
+    return df_final, df_removed_total
+
+
 # =============================================================================
 # CRIAÇÃO DO DIRETÓRIO DE SAÍDA
 # =============================================================================
@@ -783,7 +1106,10 @@ print(f"  Sheet '{SHEET_LONG}': {df_var3.shape[0]} linhas × {df_var3.shape[1]} 
 #%% Scatter plots: Variável vs Idade
 print_section_header("VISUALIZAÇÃO EXPLORATÓRIA")
 
-fig, axes = plt.subplots(1, 3, figsize=(14, 5))
+# Dicionário para armazenar figuras (serão salvas no final)
+figuras_para_salvar = {}
+
+fig_scatter_inicial, axes = plt.subplots(1, 3, figsize=(14, 5))
 
 # Scatter plot: VAR1 vs Idade
 axes[0].scatter(df_var1['IDADE'], df_var1[VAR1], alpha=0.5, s=10)
@@ -807,11 +1133,11 @@ axes[2].set_ylabel(VAR3)
 axes[2].set_title(f'{VAR3} vs Idade')
 
 plt.tight_layout()
-plt.savefig(rf"{OUTPUT_DIR}\scatter_exploratorio_inicial.png", dpi=300, bbox_inches='tight')
+figuras_para_salvar['scatter_exploratorio_inicial'] = fig_scatter_inicial
 plt.show()
 
 #%% Histogramas das variáveis principais
-fig, axes = plt.subplots(1, 3, figsize=(14, 5))
+fig_hist_inicial, axes = plt.subplots(1, 3, figsize=(14, 5))
 
 create_histogram(axes[0], df_var1[VAR1].dropna(), VAR1)
 axes[0].set_title(f'Distribuição de {VAR1}')
@@ -823,7 +1149,7 @@ create_histogram(axes[2], df_var3[VAR3].dropna(), VAR3)
 axes[2].set_title(f'Distribuição de {VAR3}')
 
 plt.tight_layout()
-plt.savefig(rf"{OUTPUT_DIR}\histogramas_inicial.png", dpi=300, bbox_inches='tight')
+figuras_para_salvar['histogramas_inicial'] = fig_hist_inicial
 plt.show()
 
 
@@ -860,97 +1186,119 @@ df_var3_clean = apply_consistency_filters(df_var3.copy(), VAR3, "stddev_comp")
 
 
 # =============================================================================
-# VISUALIZAÇÃO PÓS-FILTRAGEM
+# VISUALIZAÇÃO PÓS-FILTRAGEM (AUTOMÁTICA)
 # =============================================================================
-#%% Scatter plots pós-filtragem
-print_section_header("VISUALIZAÇÃO PÓS-FILTRAGEM")
+#%% Scatter plots pós-filtragem automática (apenas visualização, salvamento no final)
+print_section_header("VISUALIZAÇÃO PÓS-FILTRAGEM (AUTOMÁTICA)")
 
-fig, axes = plt.subplots(1, 3, figsize=(14, 5))
+fig_scatter_pos_auto, axes = plt.subplots(1, 3, figsize=(14, 5))
 
 axes[0].scatter(df_var1_clean['IDADE'], df_var1_clean[VAR1], alpha=0.5, s=10)
 axes[0].grid(linestyle='--', color='gray', alpha=0.5)
 axes[0].set_xlabel('Idade (meses)')
 axes[0].set_ylabel(VAR1)
-axes[0].set_title(f'{VAR1} vs Idade (Filtrado)')
+axes[0].set_title(f'{VAR1} vs Idade (Filtrado Auto)')
 
 axes[1].scatter(df_var2_clean['IDADE'], df_var2_clean[VAR2], alpha=0.5, s=10)
 axes[1].grid(linestyle='--', color='gray', alpha=0.5)
 axes[1].set_xlabel('Idade (meses)')
 axes[1].set_ylabel(VAR2)
-axes[1].set_title(f'{VAR2} vs Idade (Filtrado)')
+axes[1].set_title(f'{VAR2} vs Idade (Filtrado Auto)')
 
 axes[2].scatter(df_var3_clean['IDADE'], df_var3_clean[VAR3], alpha=0.5, s=10)
 axes[2].grid(linestyle='--', color='gray', alpha=0.5)
 axes[2].set_xlabel('Idade (meses)')
 axes[2].set_ylabel(VAR3)
-axes[2].set_title(f'{VAR3} vs Idade (Filtrado)')
+axes[2].set_title(f'{VAR3} vs Idade (Filtrado Auto)')
 
 plt.tight_layout()
-plt.savefig(rf"{OUTPUT_DIR}\scatter_pos_filtragem.png", dpi=300, bbox_inches='tight')
+# Figura será salva no final após todas as filtragens
 plt.show()
+plt.close(fig_scatter_pos_auto)
 
-#%% Histogramas pós-filtragem
-fig, axes = plt.subplots(1, 3, figsize=(14, 5))
+#%% Histogramas pós-filtragem automática (apenas visualização, salvamento no final)
+fig_hist_pos_auto, axes = plt.subplots(1, 3, figsize=(14, 5))
 
 create_histogram(axes[0], df_var1_clean[VAR1].dropna(), VAR1)
-axes[0].set_title(f'Distribuição de {VAR1} (Filtrado)')
+axes[0].set_title(f'Distribuição de {VAR1} (Filtrado Auto)')
 
 create_histogram(axes[1], df_var2_clean[VAR2].dropna(), VAR2)
-axes[1].set_title(f'Distribuição de {VAR2} (Filtrado)')
+axes[1].set_title(f'Distribuição de {VAR2} (Filtrado Auto)')
 
 create_histogram(axes[2], df_var3_clean[VAR3].dropna(), VAR3)
-axes[2].set_title(f'Distribuição de {VAR3} (Filtrado)')
+axes[2].set_title(f'Distribuição de {VAR3} (Filtrado Auto)')
 
 plt.tight_layout()
-plt.savefig(rf"{OUTPUT_DIR}\histogramas_pos_filtragem.png", dpi=300, bbox_inches='tight')
+# Figura será salva no final após todas as filtragens
 plt.show()
+plt.close(fig_hist_pos_auto)
 
 
 
 # =============================================================================
-# SELEÇÃO MANUAL DE OUTLIERS (LASSO)
+# PREPARAÇÃO DOS ESTRATOS (REGIONAL + REGIME)
 # =============================================================================
-#%% Seleção manual com lasso para cada variável
-print_section_header("SELEÇÃO MANUAL DE OUTLIERS")
+print_section_header("PREPARAÇÃO DOS ESTRATOS")
+
+print("\nAdicionando colunas de estratificação (regional, regime, grupo)...")
+df_var1_clean = preparar_dados_estrato(df_var1_clean)
+df_var2_clean = preparar_dados_estrato(df_var2_clean)
+df_var3_clean = preparar_dados_estrato(df_var3_clean)
+
+# Mostrar distribuição por grupo
+for df, var in [(df_var1_clean, VAR1), (df_var2_clean, VAR2), (df_var3_clean, VAR3)]:
+    print(f"\n{var}:")
+    print(f"  Por Regional: {dict(df['regional'].value_counts())}")
+    print(f"  Por Regime: {dict(df['regime'].value_counts())}")
+
+
+# =============================================================================
+# SELEÇÃO MANUAL DE OUTLIERS (LASSO) - POR ESTRATO
+# =============================================================================
+#%% Seleção manual com lasso para cada variável, por grupo (regional + regime)
+print_section_header("SELEÇÃO MANUAL DE OUTLIERS (POR ESTRATO)")
 
 # Desativar modo interativo para garantir que plt.show() bloqueie
 plt.ioff()
 
-print("\n>>> Selecione outliers para Z Kurt (VAR1)")
-print("    Desenhe com o mouse | ENTER=confirmar | ESC=cancelar")
-df_var1_final, df_var1_removed = lasso_filter_dataframe(
+print("\n" + "="*50)
+print(f">>> {VAR1} - Filtragem por estrato")
+print("="*50)
+df_var1_final, df_var1_removed = lasso_filter_por_estrato(
     df_var1_clean,
     x_col="IDADE",
     y_col=VAR1,
-    title="Seleção manual de outliers – Z Kurt"
+    var_name=VAR1
 )
 
-print("\n>>> Selecione outliers para Z P90 (VAR2)")
-print("    Desenhe com o mouse | ENTER=confirmar | ESC=cancelar")
-df_var2_final, df_var2_removed = lasso_filter_dataframe(
+print("\n" + "="*50)
+print(f">>> {VAR2} - Filtragem por estrato")
+print("="*50)
+df_var2_final, df_var2_removed = lasso_filter_por_estrato(
     df_var2_clean,
     x_col="IDADE",
     y_col=VAR2,
-    title="Seleção manual de outliers – Z P90"
+    var_name=VAR2
 )
 
-print("\n>>> Selecione outliers para Z σ (VAR3)")
-print("    Desenhe com o mouse | ENTER=confirmar | ESC=cancelar")
-df_var3_final, df_var3_removed = lasso_filter_dataframe(
+print("\n" + "="*50)
+print(f">>> {VAR3} - Filtragem por estrato")
+print("="*50)
+df_var3_final, df_var3_removed = lasso_filter_por_estrato(
     df_var3_clean,
     x_col="IDADE",
     y_col=VAR3,
-    title="Seleção manual de outliers – Z σ"
+    var_name=VAR3
 )
 
 
 # =============================================================================
 # VISUALIZAÇÃO FINAL (PÓS-FILTRAGEM MANUAL)
 # =============================================================================
-#%% Scatter plots finais
+#%% Scatter plots finais (apenas visualização, salvamento no final)
 print_section_header("VISUALIZAÇÃO FINAL (PÓS-FILTRAGEM MANUAL)")
 
-fig, axes = plt.subplots(1, 3, figsize=(14, 5))
+fig_scatter_final, axes = plt.subplots(1, 3, figsize=(14, 5))
 
 axes[0].scatter(df_var1_final['IDADE'], df_var1_final[VAR1], alpha=0.5, s=10, c='green')
 axes[0].grid(linestyle='--', color='gray', alpha=0.5)
@@ -971,11 +1319,11 @@ axes[2].set_ylabel(VAR3)
 axes[2].set_title(f'{VAR3} vs Idade (Final)')
 
 plt.tight_layout()
-plt.savefig(rf"{OUTPUT_DIR}\scatter_final.png", dpi=300, bbox_inches='tight')
+figuras_para_salvar['scatter_final'] = fig_scatter_final
 plt.show()
 
-#%% Histogramas finais
-fig, axes = plt.subplots(1, 3, figsize=(14, 5))
+#%% Histogramas finais (apenas visualização, salvamento no final)
+fig_hist_final, axes = plt.subplots(1, 3, figsize=(14, 5))
 
 create_histogram(axes[0], df_var1_final[VAR1].dropna(), VAR1, color='green')
 axes[0].set_title(f'Distribuição de {VAR1} (Final)')
@@ -987,7 +1335,7 @@ create_histogram(axes[2], df_var3_final[VAR3].dropna(), VAR3, color='green')
 axes[2].set_title(f'Distribuição de {VAR3} (Final)')
 
 plt.tight_layout()
-plt.savefig(rf"{OUTPUT_DIR}\histogramas_final.png", dpi=300, bbox_inches='tight')
+figuras_para_salvar['histogramas_final'] = fig_hist_final
 plt.show()
 
 
@@ -1032,6 +1380,9 @@ print("  [2] Calculando dv, di e delta...")
 df_var1_delta = calcular_delta_metrics(df_var1_pares)
 print(f"      Registros após filtro dv >= 0: {len(df_var1_delta)}")
 
+print("  [3] Adicionando estratos...")
+df_var1_delta = preparar_dados_estrato(df_var1_delta)
+
 # Processar VAR2 (Z P90)
 print(f"\n--- Processando {VAR2} ---")
 print("  [1] Transformando para pares...")
@@ -1041,6 +1392,9 @@ print(f"      Pares gerados: {len(df_var2_pares)}")
 print("  [2] Calculando dv, di e delta...")
 df_var2_delta = calcular_delta_metrics(df_var2_pares)
 print(f"      Registros após filtro dv >= 0: {len(df_var2_delta)}")
+
+print("  [3] Adicionando estratos...")
+df_var2_delta = preparar_dados_estrato(df_var2_delta)
 
 # Processar VAR3 (Z σ)
 print(f"\n--- Processando {VAR3} ---")
@@ -1052,14 +1406,17 @@ print("  [2] Calculando dv, di e delta...")
 df_var3_delta = calcular_delta_metrics(df_var3_pares)
 print(f"      Registros após filtro dv >= 0: {len(df_var3_delta)}")
 
+print("  [3] Adicionando estratos...")
+df_var3_delta = preparar_dados_estrato(df_var3_delta)
+
 
 # =============================================================================
 # VISUALIZAÇÃO DO DELTA (PRÉ-FILTRAGEM MANUAL)
 # =============================================================================
-#%% Scatter plots do delta
+#%% Scatter plots do delta (apenas visualização, salvamento no final)
 print_section_header("VISUALIZAÇÃO DO DELTA")
 
-fig, axes = plt.subplots(1, 3, figsize=(14, 5))
+fig_delta_pre, axes = plt.subplots(1, 3, figsize=(14, 5))
 
 # Delta VAR1 vs v1 (valor inicial)
 axes[0].scatter(df_var1_delta['v1'], df_var1_delta['delta'], alpha=0.5, s=10, c='purple')
@@ -1083,51 +1440,55 @@ axes[2].set_ylabel('Delta (dv/di)')
 axes[2].set_title(f'Delta {VAR3} vs v1')
 
 plt.tight_layout()
-plt.savefig(rf"{OUTPUT_DIR}\scatter_delta_pre_filtragem.png", dpi=300, bbox_inches='tight')
+# Figura será salva no final após todas as filtragens
 plt.show()
+plt.close(fig_delta_pre)
 
 
 # =============================================================================
-# SELEÇÃO MANUAL DE OUTLIERS NO DELTA (LASSO)
+# SELEÇÃO MANUAL DE OUTLIERS NO DELTA (LASSO) - POR ESTRATO
 # =============================================================================
-#%% Seleção manual com lasso para delta de cada variável
-print_section_header("SELEÇÃO MANUAL DE OUTLIERS NO DELTA")
+#%% Seleção manual com lasso para delta de cada variável, por grupo
+print_section_header("SELEÇÃO MANUAL DE OUTLIERS NO DELTA (POR ESTRATO)")
 
-print("\n>>> Selecione outliers no Delta de Z Kurt (VAR1)")
-print("    Desenhe com o mouse | ENTER=confirmar | ESC=cancelar")
-df_var1_delta_final, df_var1_delta_removed = lasso_filter_delta(
+print("\n" + "="*50)
+print(f">>> Delta {VAR1} - Filtragem por estrato")
+print("="*50)
+df_var1_delta_final, df_var1_delta_removed = lasso_filter_delta_por_estrato(
     df_var1_delta,
     x_col="v1",
     y_col="delta",
-    title="Seleção manual de outliers – Delta Z Kurt (v1 x delta)"
+    var_name=VAR1
 )
 
-print("\n>>> Selecione outliers no Delta de Z P90 (VAR2)")
-print("    Desenhe com o mouse | ENTER=confirmar | ESC=cancelar")
-df_var2_delta_final, df_var2_delta_removed = lasso_filter_delta(
+print("\n" + "="*50)
+print(f">>> Delta {VAR2} - Filtragem por estrato")
+print("="*50)
+df_var2_delta_final, df_var2_delta_removed = lasso_filter_delta_por_estrato(
     df_var2_delta,
     x_col="v1",
     y_col="delta",
-    title="Seleção manual de outliers – Delta Z P90 (v1 x delta)"
+    var_name=VAR2
 )
 
-print("\n>>> Selecione outliers no Delta de Z σ (VAR3)")
-print("    Desenhe com o mouse | ENTER=confirmar | ESC=cancelar")
-df_var3_delta_final, df_var3_delta_removed = lasso_filter_delta(
+print("\n" + "="*50)
+print(f">>> Delta {VAR3} - Filtragem por estrato")
+print("="*50)
+df_var3_delta_final, df_var3_delta_removed = lasso_filter_delta_por_estrato(
     df_var3_delta,
     x_col="v1",
     y_col="delta",
-    title="Seleção manual de outliers – Delta Z σ (v1 x delta)"
+    var_name=VAR3
 )
 
 
 # =============================================================================
 # VISUALIZAÇÃO FINAL DO DELTA (PÓS-FILTRAGEM MANUAL)
 # =============================================================================
-#%% Scatter plots finais do delta
+#%% Scatter plots finais do delta (apenas visualização, salvamento no final)
 print_section_header("VISUALIZAÇÃO FINAL DO DELTA (PÓS-FILTRAGEM MANUAL)")
 
-fig, axes = plt.subplots(1, 3, figsize=(14, 5))
+fig_delta_final, axes = plt.subplots(1, 3, figsize=(14, 5))
 
 axes[0].scatter(df_var1_delta_final['v1'], df_var1_delta_final['delta'], alpha=0.5, s=10, c='green')
 axes[0].grid(linestyle='--', color='gray', alpha=0.5)
@@ -1148,7 +1509,7 @@ axes[2].set_ylabel('Delta (dv/di)')
 axes[2].set_title(f'Delta {VAR3} vs v1 (Final)')
 
 plt.tight_layout()
-plt.savefig(rf"{OUTPUT_DIR}\scatter_delta_final.png", dpi=300, bbox_inches='tight')
+figuras_para_salvar['scatter_delta_final'] = fig_delta_final
 plt.show()
 
 
@@ -1161,6 +1522,85 @@ print("\nResumo dos DataFrames de delta após filtragem manual:")
 print(f"  {VAR1}: {len(df_var1_delta_final)} registros (removidos manualmente: {len(df_var1_delta_removed)})")
 print(f"  {VAR2}: {len(df_var2_delta_final)} registros (removidos manualmente: {len(df_var2_delta_removed)})")
 print(f"  {VAR3}: {len(df_var3_delta_final)} registros (removidos manualmente: {len(df_var3_delta_removed)})")
+
+
+# =============================================================================
+# GERAÇÃO E SALVAMENTO DE TODAS AS FIGURAS
+# =============================================================================
+print_section_header("SALVAMENTO DE TODAS AS FIGURAS")
+
+print("\nGerando scatter plot pós-filtragem (dados finais)...")
+fig_scatter_pos, axes = plt.subplots(1, 3, figsize=(14, 5))
+
+axes[0].scatter(df_var1_final['IDADE'], df_var1_final[VAR1], alpha=0.5, s=10)
+axes[0].grid(linestyle='--', color='gray', alpha=0.5)
+axes[0].set_xlabel('Idade (meses)')
+axes[0].set_ylabel(VAR1)
+axes[0].set_title(f'{VAR1} vs Idade (Filtrado)')
+
+axes[1].scatter(df_var2_final['IDADE'], df_var2_final[VAR2], alpha=0.5, s=10)
+axes[1].grid(linestyle='--', color='gray', alpha=0.5)
+axes[1].set_xlabel('Idade (meses)')
+axes[1].set_ylabel(VAR2)
+axes[1].set_title(f'{VAR2} vs Idade (Filtrado)')
+
+axes[2].scatter(df_var3_final['IDADE'], df_var3_final[VAR3], alpha=0.5, s=10)
+axes[2].grid(linestyle='--', color='gray', alpha=0.5)
+axes[2].set_xlabel('Idade (meses)')
+axes[2].set_ylabel(VAR3)
+axes[2].set_title(f'{VAR3} vs Idade (Filtrado)')
+
+plt.tight_layout()
+figuras_para_salvar['scatter_pos_filtragem'] = fig_scatter_pos
+
+print("Gerando histogramas pós-filtragem (dados finais)...")
+fig_hist_pos, axes = plt.subplots(1, 3, figsize=(14, 5))
+
+create_histogram(axes[0], df_var1_final[VAR1].dropna(), VAR1)
+axes[0].set_title(f'Distribuição de {VAR1} (Filtrado)')
+
+create_histogram(axes[1], df_var2_final[VAR2].dropna(), VAR2)
+axes[1].set_title(f'Distribuição de {VAR2} (Filtrado)')
+
+create_histogram(axes[2], df_var3_final[VAR3].dropna(), VAR3)
+axes[2].set_title(f'Distribuição de {VAR3} (Filtrado)')
+
+plt.tight_layout()
+figuras_para_salvar['histogramas_pos_filtragem'] = fig_hist_pos
+
+print("Gerando scatter plot delta pré-filtragem (dados finais)...")
+fig_delta_pre_final, axes = plt.subplots(1, 3, figsize=(14, 5))
+
+axes[0].scatter(df_var1_delta_final['v1'], df_var1_delta_final['delta'], alpha=0.5, s=10, c='purple')
+axes[0].grid(linestyle='--', color='gray', alpha=0.5)
+axes[0].set_xlabel('Valor Inicial (v1)')
+axes[0].set_ylabel('Delta (dv/di)')
+axes[0].set_title(f'Delta {VAR1} vs v1')
+
+axes[1].scatter(df_var2_delta_final['v1'], df_var2_delta_final['delta'], alpha=0.5, s=10, c='purple')
+axes[1].grid(linestyle='--', color='gray', alpha=0.5)
+axes[1].set_xlabel('Valor Inicial (v1)')
+axes[1].set_ylabel('Delta (dv/di)')
+axes[1].set_title(f'Delta {VAR2} vs v1')
+
+axes[2].scatter(df_var3_delta_final['v1'], df_var3_delta_final['delta'], alpha=0.5, s=10, c='purple')
+axes[2].grid(linestyle='--', color='gray', alpha=0.5)
+axes[2].set_xlabel('Valor Inicial (v1)')
+axes[2].set_ylabel('Delta (dv/di)')
+axes[2].set_title(f'Delta {VAR3} vs v1')
+
+plt.tight_layout()
+figuras_para_salvar['scatter_delta_pre_filtragem'] = fig_delta_pre_final
+
+# Salvar todas as figuras
+print("\nSalvando todas as figuras...")
+for nome, fig in figuras_para_salvar.items():
+    caminho = rf"{OUTPUT_DIR}\{nome}.png"
+    fig.savefig(caminho, dpi=300, bbox_inches='tight')
+    print(f"  Salvo: {nome}.png")
+    plt.close(fig)
+
+print(f"\nTotal de figuras salvas: {len(figuras_para_salvar)}")
 
 
 # =============================================================================

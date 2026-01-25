@@ -844,7 +844,14 @@ def _get_model_prediction(modelo_nome, x, a, b, c):
 
 
 def plot_ajustes_gompertz_por_grupo(df, var_name, var_col, df_resultados, output_path):
-    """Plota os dados e curvas ajustadas do melhor modelo para cada grupo em subplots."""
+    """
+    Plota diagnóstico completo do melhor modelo para cada grupo em subplots.
+
+    Layout por grupo (1 linha, 3 colunas):
+        (a) Scatter com ajuste: Idade vs Variável + curva do modelo
+        (b) Resíduos vs Estimado: dispersão dos resíduos
+        (c) Histograma de resíduos: distribuição de frequência
+    """
     # Filtrar apenas os melhores modelos para plotagem
     df_melhores = df_resultados[df_resultados['melhor'] == 'X'] if 'melhor' in df_resultados.columns else df_resultados
     grupos_validos = df_melhores[df_melhores['r2'].notna()]['grupo'].unique()
@@ -854,44 +861,95 @@ def plot_ajustes_gompertz_por_grupo(df, var_name, var_col, df_resultados, output
         print("    Nenhum grupo com ajuste válido para plotar.")
         return
 
-    n_cols = min(3, n_grupos)
-    n_rows = int(np.ceil(n_grupos / n_cols))
-
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 4 * n_rows))
+    # Layout: n_grupos linhas x 3 colunas
+    fig, axes = plt.subplots(n_grupos, 3, figsize=(14, 4.5 * n_grupos))
     if n_grupos == 1:
-        axes = np.array([axes])
-    axes = axes.flatten()
+        axes = axes.reshape(1, -1)
 
     for idx, grupo in enumerate(grupos_validos):
-        ax = axes[idx]
         grupo_df = df[df['grupo'] == grupo]
         resultado = df_melhores[df_melhores['grupo'] == grupo].iloc[0]
 
         x = grupo_df['IDADE'].values
-        y = grupo_df[var_col].values
+        y_obs = grupo_df[var_col].values
 
         regime = resultado['regime']
         cor = COLORS_REGIME.get(regime, '#1f77b4')
+        modelo_nome = resultado.get('modelo', 'Gompertz')
 
-        ax.scatter(x, y, alpha=0.4, s=15, c=cor, label='Dados')
+        # Calcular predições e resíduos
+        y_pred = _get_model_prediction(modelo_nome, x, resultado['a'], resultado['b'], resultado['c'])
+        residuos = y_obs - y_pred
+        residuos_pct = (residuos / y_obs) * 100
+
+        # --- (a) Scatter com Ajuste ---
+        ax1 = axes[idx, 0]
+        ax1.scatter(x, y_obs, alpha=0.5, s=20, c='#555555', edgecolors='white', linewidth=0.3, label='Observado')
 
         if resultado['r2'] is not None:
             x_smooth = np.linspace(x.min(), x.max(), 100)
-            modelo_nome = resultado.get('modelo', 'Gompertz')
             y_smooth = _get_model_prediction(modelo_nome, x_smooth, resultado['a'], resultado['b'], resultado['c'])
-            ax.plot(x_smooth, y_smooth, 'k-', linewidth=2, label=f"{modelo_nome}\nR²={resultado['r2']:.3f}")
+            ax1.plot(x_smooth, y_smooth, '-', color=cor, linewidth=2,
+                     label=f"{modelo_nome} | R²={resultado['r2']:.4f}")
 
-        ax.set_xlabel('Idade (meses)')
-        ax.set_ylabel(var_col)
-        ax.set_title(f"{grupo}\n(n={resultado['n']})")
-        ax.legend(loc='best', fontsize=8)
-        ax.grid(linestyle='--', alpha=0.5)
+        ax1.set_xlabel('Idade (meses)')
+        ax1.set_ylabel(var_col)
+        ax1.set_title(f"(a) {grupo} (n={resultado['n']})", fontsize=11, loc='left')
+        ax1.legend(loc='lower right', fontsize=8)
+        ax1.grid(linestyle='--', alpha=0.3)
+        ax1.spines['top'].set_visible(False)
+        ax1.spines['right'].set_visible(False)
 
-    for idx in range(n_grupos, len(axes)):
-        axes[idx].set_visible(False)
+        # --- (b) Resíduos vs Estimado ---
+        ax2 = axes[idx, 1]
+        ax2.scatter(y_pred, residuos_pct, alpha=0.5, s=20, c='#555555', edgecolors='white', linewidth=0.3)
+        ax2.axhline(y=0, color='black', linestyle='--', linewidth=1.5)
+        ax2.axhline(y=20, color='gray', linestyle=':', linewidth=1, alpha=0.7)
+        ax2.axhline(y=-20, color='gray', linestyle=':', linewidth=1, alpha=0.7)
 
-    plt.suptitle(f'Melhor Modelo por Grupo - {var_name} = f(Idade)',
-                 fontsize=14, y=1.02)
+        ax2.set_xlabel(f'{var_col} Estimado')
+        ax2.set_ylabel('Resíduos (%)')
+        ax2.set_title('(b)', fontsize=11, loc='left')
+        ax2.grid(linestyle='--', alpha=0.3)
+        ax2.spines['top'].set_visible(False)
+        ax2.spines['right'].set_visible(False)
+
+        # Limitar eixo Y dos resíduos se necessário
+        res_lim = max(abs(np.percentile(residuos_pct, 5)), abs(np.percentile(residuos_pct, 95))) * 1.5
+        res_lim = min(res_lim, 100)  # Cap em 100%
+        ax2.set_ylim(-res_lim, res_lim)
+
+        # --- (c) Histograma de Resíduos ---
+        ax3 = axes[idx, 2]
+
+        # Bins e cálculo de frequência
+        bin_width = 10
+        bin_edges = np.arange(-105, 115, bin_width)
+        bin_centers = np.arange(-100, 110, bin_width)
+        counts, _ = np.histogram(residuos_pct.clip(-100, 100), bins=bin_edges)
+        percentages = counts / len(residuos_pct) * 100
+
+        bars = ax3.bar(bin_centers, percentages, width=bin_width * 0.8, alpha=0.7,
+                       color='#555555', edgecolor='white', linewidth=0.8)
+        ax3.axvline(x=0, ymax=0.98, color='black', linestyle='--', linewidth=1.5)
+
+        # Rótulos acima das barras
+        for bar, pct in zip(bars, percentages):
+            if pct > 0:
+                ax3.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.3,
+                         f'{pct:.1f}'.replace('.', ','), ha='center', va='bottom', fontsize=7)
+
+        ax3.set_xlabel('Resíduos (%)')
+        ax3.set_ylabel('Frequência (%)')
+        ax3.set_xlim(-110, 110)
+        ax3.set_xticks(np.arange(-100, 110, 20))
+        ax3.set_title('(c)', fontsize=11, loc='left')
+        ax3.grid(linestyle='--', alpha=0.3)
+        ax3.spines['top'].set_visible(False)
+        ax3.spines['right'].set_visible(False)
+
+    plt.suptitle(f'Diagnóstico por Grupo - {var_name} = f(Idade)',
+                 fontsize=14, y=1.01)
     plt.tight_layout()
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
     plt.close(fig)

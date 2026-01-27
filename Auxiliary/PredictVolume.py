@@ -414,12 +414,17 @@ def align_raster(
     tuple
         (array alinhado, valor nodata)
     """
+    # CRS padrão caso nenhum esteja definido
+    default_crs = CRS.from_epsg(31983)  # SIRGAS 2000 UTM 23S
+
     with rasterio.open(source_path) as src:
         band = src.read(1).astype('float32')
         nodata = src.nodata if src.nodata is not None else np.nan
 
         # Determina CRS de destino
         dst_crs = target_crs if target_crs is not None else reference_info['crs']
+        if dst_crs is None:
+            dst_crs = default_crs
 
         # Determina CRS de origem (se nao tiver, assume o CRS alvo)
         src_crs = src.crs if src.crs is not None else dst_crs
@@ -678,6 +683,11 @@ def predict_volume(
 
     n_valid = np.sum(valid_mask)
     print(f"  Pixels válidos: {n_valid:,} de {n_pixels:,} ({100*n_valid/n_pixels:.1f}%)")
+
+    # Verifica se há pixels válidos
+    if n_valid == 0:
+        print("\n  AVISO: Nenhum pixel válido encontrado. Pulando...")
+        return {'prediction': None, 'error': 'no_valid_pixels'}
 
     # Extrai dados válidos
     valid_data = flat_stack[valid_mask]

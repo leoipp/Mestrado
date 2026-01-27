@@ -36,7 +36,7 @@ try:
     from rasterio.mask import mask
     from rasterio.features import geometry_mask
     import geopandas as gpd
-    from shapely.geometry import mapping
+    from shapely.geometry import mapping, box
 except ImportError as e:
     raise ImportError(f"Dependência não encontrada: {e}. Execute: pip install rasterio geopandas")
 
@@ -134,7 +134,13 @@ def clip_raster_by_shape(
     with rasterio.open(raster_path) as src:
         raster_crs = src.crs
         raster_bounds = src.bounds
-        raster_nodata = src.nodata if nodata is None else nodata
+        # Usa nodata do parâmetro, ou do raster, ou -9999 como padrão
+        if nodata is not None:
+            raster_nodata = nodata
+        elif src.nodata is not None:
+            raster_nodata = src.nodata
+        else:
+            raster_nodata = -9999.0
 
         print(f"  CRS: {raster_crs}")
         print(f"  Bounds: {raster_bounds}")
@@ -144,8 +150,9 @@ def clip_raster_by_shape(
 
         # Reprojetar shapefile se necessário
         if raster_crs is None:
-            print(f"\n  AVISO: Raster sem CRS definido. Assumindo mesmo CRS do shapefile.")
-        elif gdf.crs != raster_crs:
+            print(f"\n  AVISO: Raster sem CRS definido. Usando coordenadas do shapefile como estão.")
+            # Não faz nada - assume que coordenadas são compatíveis
+        elif gdf.crs is not None and gdf.crs != raster_crs:
             print(f"\n  Reprojetando shapefile de {gdf.crs} para {raster_crs}...")
             gdf = gdf.to_crs(raster_crs)
 
@@ -172,6 +179,12 @@ def clip_raster_by_shape(
                     print(f"    AVISO: Geometria vazia, pulando...")
                     continue
 
+                # Verifica interseção com bounds do raster
+                raster_box = box(*raster_bounds)
+                if not geom.intersects(raster_box):
+                    print(f"    SKIP: Feature não intersecta o raster")
+                    continue
+
                 # Clipa o raster
                 out_image, out_transform = mask(
                     src,
@@ -179,7 +192,22 @@ def clip_raster_by_shape(
                     crop=crop,
                     nodata=raster_nodata,
                     all_touched=all_touched,
+                    filled=True,
                 )
+
+                # Converte para float32 e substitui valores extremos por nodata
+                out_image = out_image.astype('float32')
+                out_image[np.abs(out_image) > 1e30] = raster_nodata
+
+                # Verifica se há pixels válidos ANTES de salvar
+                if raster_nodata is not None:
+                    valid = out_image[out_image != raster_nodata]
+                else:
+                    valid = out_image[np.isfinite(out_image)]
+
+                if valid.size == 0:
+                    print(f"    SKIP: Sem pixels válidos")
+                    continue
 
                 # Metadados do output
                 out_meta = src.meta.copy()
@@ -200,19 +228,9 @@ def clip_raster_by_shape(
                 with rasterio.open(output_path, "w", **out_meta) as dst:
                     dst.write(out_image)
 
-                # Estatísticas
-                if raster_nodata is not None:
-                    valid = out_image[out_image != raster_nodata]
-                else:
-                    valid = out_image[np.isfinite(out_image)]
-
-                if valid.size > 0:
-                    print(f"    Shape: {out_image.shape[1]} x {out_image.shape[2]}")
-                    print(f"    Pixels válidos: {valid.size:,}")
-                    print(f"    Min/Max: {valid.min():.4f} / {valid.max():.4f}")
-                else:
-                    print(f"    AVISO: Nenhum pixel válido!")
-
+                print(f"    Shape: {out_image.shape[1]} x {out_image.shape[2]}")
+                print(f"    Pixels válidos: {valid.size:,}")
+                print(f"    Min/Max: {valid.min():.4f} / {valid.max():.4f}")
                 print(f"    Salvo: {output_path.name}")
                 results.append(str(output_path))
 
